@@ -27,9 +27,15 @@ import traceback
 # ============================================================================
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Parent of workers folder (dsu-win-cuda/) contains apollo/, models/, etc.
+DIST_ROOT = os.path.dirname(SCRIPT_DIR)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 
-# Add apollo directory to path if exists
+# Add distribution root to path (contains apollo/ folder)
+if os.path.isdir(os.path.join(DIST_ROOT, 'apollo')):
+    sys.path.insert(0, DIST_ROOT)
+
+# Also check for audio-separator-cxfreeze in dev (for development)
 APOLLO_DIR = os.path.join(PROJECT_ROOT, 'audio-separator-cxfreeze', 'apollo')
 if os.path.isdir(APOLLO_DIR):
     sys.path.insert(0, os.path.dirname(APOLLO_DIR))
