@@ -47,6 +47,10 @@ jobs:
           Copy-Item -Path "bin/*" -Destination "dist/dsu-win-cuda/bin/" -Recurse -Force
           Copy-Item -Path "workers" -Destination "dist/dsu-win-cuda/workers" -Recurse -Force
           Copy-Item -Path "launchers" -Destination "dist/dsu-win-cuda/launchers" -Recurse -Force
+          Copy-Item -Path "models" -Destination "dist/dsu-win-cuda/models" -Recurse -Force
+          Copy-Item -Path "utils" -Destination "dist/dsu-win-cuda/utils" -Recurse -Force
+          Copy-Item -Path "configs" -Destination "dist/dsu-win-cuda/configs" -Recurse -Force
+          Copy-Item -Path "apollo" -Destination "dist/dsu-win-cuda/apollo" -Recurse -Force
           Copy-Item -Path "README.md" -Destination "dist/dsu-win-cuda/"
           
           $pythonPath = (Get-Command python).Source | Split-Path
@@ -110,6 +114,10 @@ jobs:
           Copy-Item -Path "bin/*" -Destination "dist/dsu-win-cpu/bin/" -Recurse -Force
           Copy-Item -Path "workers" -Destination "dist/dsu-win-cpu/workers" -Recurse -Force
           Copy-Item -Path "launchers" -Destination "dist/dsu-win-cpu/launchers" -Recurse -Force
+          Copy-Item -Path "models" -Destination "dist/dsu-win-cpu/models" -Recurse -Force
+          Copy-Item -Path "utils" -Destination "dist/dsu-win-cpu/utils" -Recurse -Force
+          Copy-Item -Path "configs" -Destination "dist/dsu-win-cpu/configs" -Recurse -Force
+          Copy-Item -Path "apollo" -Destination "dist/dsu-win-cpu/apollo" -Recurse -Force
           Copy-Item -Path "README.md" -Destination "dist/dsu-win-cpu/"
           
           $pythonPath = (Get-Command python).Source | Split-Path
@@ -153,6 +161,10 @@ jobs:
         run: |
           mkdir -p dist/dsu-mac-arm/workers
           cp -r workers/* dist/dsu-mac-arm/workers/
+          cp -r models dist/dsu-mac-arm/models
+          cp -r utils dist/dsu-mac-arm/utils
+          cp -r configs dist/dsu-mac-arm/configs
+          cp -r apollo dist/dsu-mac-arm/apollo
           cp README.md dist/dsu-mac-arm/
           
           python -m venv dist/dsu-mac-arm/runtime
@@ -203,6 +215,10 @@ jobs:
   #       run: |
   #         mkdir -p dist/dsu-mac-intel/workers
   #         cp -r workers/* dist/dsu-mac-intel/workers/
+  #         cp -r models dist/dsu-mac-intel/models
+  #         cp -r utils dist/dsu-mac-intel/utils
+  #         cp -r configs dist/dsu-mac-intel/configs
+  #         cp -r apollo dist/dsu-mac-intel/apollo
   #         cp README.md dist/dsu-mac-intel/
   #
   #         python -m venv dist/dsu-mac-intel/runtime

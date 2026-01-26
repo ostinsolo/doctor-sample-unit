@@ -28,9 +28,15 @@ import traceback
 
 # Get script directory
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Parent of workers folder (dsu-win-cuda/) contains models/, utils/, etc.
+DIST_ROOT = os.path.dirname(SCRIPT_DIR)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 
-# Add bs-roformer-freeze-repo to path for model imports
+# Add distribution root to path (contains models/, utils/, configs/, apollo/)
+if os.path.isdir(os.path.join(DIST_ROOT, 'models')):
+    sys.path.insert(0, DIST_ROOT)
+
+# Also check for bs-roformer-freeze-repo in dev (for development)
 BSROFORMER_DIR = os.path.join(PROJECT_ROOT, 'dev', 'bs-roformer-freeze-repo')
 BSROFORMER_FROZEN_DIR = os.path.join(BSROFORMER_DIR, 'frozen')
 
