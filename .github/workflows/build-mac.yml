@@ -9,7 +9,7 @@ on:
 jobs:
   build-mac-arm:
     name: Build DSU macOS ARM (Apple Silicon)
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -89,7 +89,7 @@ jobs:
 
   build-mac-intel:
     name: Build DSU macOS Intel
-    runs-on: macos-13
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 
