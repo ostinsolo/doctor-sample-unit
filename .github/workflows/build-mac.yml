@@ -2,9 +2,7 @@ name: Build macOS
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
+  # Manual trigger only - use release.yml for automated releases
 
 jobs:
   build-mac-arm:
