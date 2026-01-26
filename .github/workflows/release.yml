@@ -196,14 +196,23 @@ jobs:
           cp README.md dist/dsu-mac-intel/
           
           python -m venv dist/dsu-mac-intel/runtime
-          dist/dsu-mac-intel/runtime/bin/pip install --upgrade pip
-          dist/dsu-mac-intel/runtime/bin/pip install torch==2.2.2 torchaudio==2.2.2 torchvision==0.17.2
-          dist/dsu-mac-intel/runtime/bin/pip install "numpy>=2.0.0"
-          dist/dsu-mac-intel/runtime/bin/pip install audio-separator==0.41.0 demucs>=4.0.0
-          dist/dsu-mac-intel/runtime/bin/pip install librosa soundfile samplerate==0.1.0 pydub scipy resampy
-          dist/dsu-mac-intel/runtime/bin/pip install onnx onnx2torch onnxruntime
-          dist/dsu-mac-intel/runtime/bin/pip install einops julius diffq "beartype>=0.18.5,<0.19.0" "rotary-embedding-torch>=0.6.1,<0.7.0" loralib
-          dist/dsu-mac-intel/runtime/bin/pip install requests tqdm six pyyaml omegaconf huggingface-hub pytorch-lightning ml-collections matplotlib
+          PIP="dist/dsu-mac-intel/runtime/bin/pip"
+          $PIP install --upgrade pip
+          
+          # Intel Mac: torch 2.2.2 is max available, requires numpy<2
+          $PIP install "numpy<2" torch==2.2.2 torchaudio==2.2.2 torchvision==0.17.2
+          
+          # Demucs works with torch 2.2.2
+          $PIP install demucs>=4.0.0
+          
+          # audio-separator requires torch>=2.3, use --no-deps and install manually
+          $PIP install --no-deps audio-separator
+          
+          # All audio-separator dependencies (compatible with torch 2.2.2)
+          $PIP install librosa soundfile samplerate==0.1.0 pydub scipy resampy
+          $PIP install onnx onnx2torch onnxruntime
+          $PIP install einops julius diffq "beartype>=0.18.5,<0.19.0" "rotary-embedding-torch>=0.6.1,<0.7.0" loralib
+          $PIP install requests tqdm six pyyaml omegaconf huggingface-hub pytorch-lightning ml-collections matplotlib
 
       - name: Test
         run: |
