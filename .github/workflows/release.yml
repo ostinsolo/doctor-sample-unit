@@ -189,6 +189,12 @@ jobs:
         with:
           python-version: '3.10'
 
+      # Install LLVM for llvmlite compilation
+      - name: Install LLVM
+        run: |
+          brew install llvm@15
+          echo "LLVM_CONFIG=$(brew --prefix llvm@15)/bin/llvm-config" >> $GITHUB_ENV
+          
       - name: Create distribution
         run: |
           mkdir -p dist/dsu-mac-intel/workers
@@ -198,6 +204,9 @@ jobs:
           python -m venv dist/dsu-mac-intel/runtime
           PIP="dist/dsu-mac-intel/runtime/bin/pip"
           $PIP install --upgrade pip
+          
+          # Set LLVM path for llvmlite build
+          export LLVM_CONFIG=$(brew --prefix llvm@15)/bin/llvm-config
           
           # Intel Mac: torch 2.2.2 is max available, requires numpy<2
           $PIP install "numpy<2" torch==2.2.2 torchaudio==2.2.2 torchvision==0.17.2
