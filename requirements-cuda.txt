@@ -1,0 +1,80 @@
+# =============================================================================
+# Doctor Sample Unit (DSU) - Shared Runtime Requirements
+# Platform: Windows NVIDIA GPU (CUDA 12.6)
+# Python: 3.10
+# =============================================================================
+# Supports: BS-RoFormer, Audio-Separator, Demucs, Apollo
+# =============================================================================
+
+--extra-index-url https://download.pytorch.org/whl/cu126
+
+# -----------------------------------------------------------------------------
+# PyTorch CUDA 12.6 (latest stable)
+# -----------------------------------------------------------------------------
+torch==2.10.0+cu126
+torchaudio==2.10.0+cu126
+torchvision==0.25.0+cu126
+
+# -----------------------------------------------------------------------------
+# NumPy - Use numpy>=2 (tested compatible with all architectures)
+# Note: BS-RoFormer originally specified numpy<2 but works fine with numpy>=2
+# -----------------------------------------------------------------------------
+numpy>=2.0.0
+
+# -----------------------------------------------------------------------------
+# Audio Processing Core
+# -----------------------------------------------------------------------------
+audio-separator==0.41.0
+librosa>=0.10.0
+soundfile>=0.12.0
+samplerate==0.1.0
+pydub>=0.25.0
+scipy>=1.10.0
+resampy>=0.4.0
+
+# Demucs
+demucs>=4.0.0
+
+# -----------------------------------------------------------------------------
+# ONNX (GPU version for MDX models)
+# -----------------------------------------------------------------------------
+onnx>=1.14.0
+onnx2torch>=1.5.0
+onnxruntime-gpu>=1.16.0
+
+# -----------------------------------------------------------------------------
+# Model Dependencies
+# -----------------------------------------------------------------------------
+einops>=0.7.0
+julius>=0.2.7
+diffq>=0.2.4              # Required for Demucs quantized models (mdx_q, mdx_extra_q)
+beartype>=0.18.5,<0.19.0  # Required for BS-RoFormer
+rotary-embedding-torch>=0.6.1,<0.7.0  # Required for BS-RoFormer
+loralib                   # Required for BS-RoFormer LoRA support
+
+# -----------------------------------------------------------------------------
+# Librosa Windows Dependencies (CRITICAL for Windows)
+# Without these, librosa will fail with "llvmlite not found"
+# -----------------------------------------------------------------------------
+numba
+llvmlite
+
+# -----------------------------------------------------------------------------
+# Configuration & Utilities
+# -----------------------------------------------------------------------------
+requests>=2.28.0
+tqdm>=4.65.0
+six>=1.16.0
+pyyaml>=6.0
+omegaconf>=2.3.0
+huggingface-hub>=0.20.0
+pytorch-lightning>=2.0.0
+ml-collections>=0.1.0
+matplotlib               # Optional: for spectrograms
+
+# -----------------------------------------------------------------------------
+# Build Tools (for creating executables)
+# Pin to 6.15.16 - includes .py source files, eliminates torch JIT warnings
+# -----------------------------------------------------------------------------
+cx-Freeze==6.15.16
+pefile                   # For Windows PE file manipulation

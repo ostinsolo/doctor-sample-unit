@@ -1,0 +1,71 @@
+# =============================================================================
+# Doctor Sample Unit (DSU) - Shared Runtime Requirements
+# Platform: macOS Intel (x86_64) - CPU Only
+# Python: 3.10
+# =============================================================================
+# Supports: BS-RoFormer, Audio-Separator, Demucs, Apollo
+# Note: Intel Macs use CPU-only PyTorch (no GPU acceleration)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# PyTorch for Mac Intel
+# Use 2.2.2 for maximum compatibility with Intel Macs
+# (Newer versions may have issues with llvmlite/numba on Intel)
+# -----------------------------------------------------------------------------
+torch==2.2.2
+torchaudio==2.2.2
+torchvision==0.17.2
+
+# -----------------------------------------------------------------------------
+# NumPy - Use numpy>=2 (tested compatible with all architectures)
+# -----------------------------------------------------------------------------
+numpy>=2.0.0
+
+# -----------------------------------------------------------------------------
+# Audio Processing Core
+# -----------------------------------------------------------------------------
+audio-separator==0.41.0
+librosa>=0.10.0
+soundfile>=0.12.0
+samplerate==0.1.0
+pydub>=0.25.0
+scipy>=1.10.0
+resampy>=0.4.0
+
+# Demucs
+demucs>=4.0.0
+
+# -----------------------------------------------------------------------------
+# ONNX (CPU version)
+# -----------------------------------------------------------------------------
+onnx>=1.14.0
+onnx2torch>=1.5.0
+onnxruntime>=1.16.0
+
+# -----------------------------------------------------------------------------
+# Model Dependencies
+# -----------------------------------------------------------------------------
+einops>=0.7.0
+julius>=0.2.7
+diffq>=0.2.4              # Required for Demucs quantized models
+beartype>=0.18.5,<0.19.0  # Required for BS-RoFormer
+rotary-embedding-torch>=0.6.1,<0.7.0  # Required for BS-RoFormer
+loralib                   # Required for BS-RoFormer LoRA support
+
+# -----------------------------------------------------------------------------
+# Configuration & Utilities
+# -----------------------------------------------------------------------------
+requests>=2.28.0
+tqdm>=4.65.0
+six>=1.16.0
+pyyaml>=6.0
+omegaconf>=2.3.0
+huggingface-hub>=0.20.0
+pytorch-lightning>=2.0.0
+ml-collections>=0.1.0
+matplotlib
+
+# -----------------------------------------------------------------------------
+# Build Tools (optional - for creating frozen binaries)
+# -----------------------------------------------------------------------------
+cx-Freeze==6.15.16

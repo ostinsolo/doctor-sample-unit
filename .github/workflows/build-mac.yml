@@ -1,0 +1,234 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-mac-arm:
+    name: Build DSU macOS ARM (Apple Silicon)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # Install dependencies (MPS)
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          # Latest PyTorch for best MPS support
+          pip install torch torchaudio torchvision
+          pip install "numpy>=2.0.0"
+          pip install audio-separator==0.41.0 demucs>=4.0.0
+          pip install librosa>=0.10.0 soundfile>=0.12.0 samplerate==0.1.0 pydub>=0.25.0 scipy>=1.10.0 resampy>=0.4.0
+          pip install onnx>=1.14.0 onnx2torch>=1.5.0 onnxruntime>=1.16.0
+          pip install einops>=0.7.0 julius>=0.2.7 diffq>=0.2.4 "beartype>=0.18.5,<0.19.0" "rotary-embedding-torch>=0.6.1,<0.7.0" loralib
+          pip install requests>=2.28.0 tqdm>=4.65.0 six>=1.16.0 pyyaml>=6.0 omegaconf>=2.3.0 huggingface-hub>=0.20.0 pytorch-lightning>=2.0.0 ml-collections>=0.1.0 matplotlib
+
+      # Test imports
+      - name: Verify installation
+        run: |
+          python -c "import torch; print(f'PyTorch: {torch.__version__}')"
+          python -c "import torch; print(f'MPS available: {torch.backends.mps.is_available()}')"
+          python -c "import demucs; print(f'Demucs: {demucs.__version__}')"
+          python -c "import audio_separator; print(f'Audio-Separator: {audio_separator.__version__}')"
+
+      # Create distribution
+      - name: Create distribution structure
+        run: |
+          mkdir -p dist/dsu-mac-arm/runtime
+          mkdir -p dist/dsu-mac-arm/workers
+          
+          # Copy workers
+          cp -r workers/* dist/dsu-mac-arm/workers/
+          
+          # Create virtual environment in dist
+          python -m venv dist/dsu-mac-arm/runtime
+          
+          # Install into dist runtime
+          dist/dsu-mac-arm/runtime/bin/pip install --upgrade pip
+          dist/dsu-mac-arm/runtime/bin/pip install torch torchaudio torchvision
+          dist/dsu-mac-arm/runtime/bin/pip install "numpy>=2.0.0"
+          dist/dsu-mac-arm/runtime/bin/pip install audio-separator==0.41.0 demucs>=4.0.0
+          dist/dsu-mac-arm/runtime/bin/pip install librosa>=0.10.0 soundfile>=0.12.0 samplerate==0.1.0 pydub>=0.25.0 scipy>=1.10.0 resampy>=0.4.0
+          dist/dsu-mac-arm/runtime/bin/pip install onnx>=1.14.0 onnx2torch>=1.5.0 onnxruntime>=1.16.0
+          dist/dsu-mac-arm/runtime/bin/pip install einops>=0.7.0 julius>=0.2.7 diffq>=0.2.4 "beartype>=0.18.5,<0.19.0" "rotary-embedding-torch>=0.6.1,<0.7.0" loralib
+          dist/dsu-mac-arm/runtime/bin/pip install requests>=2.28.0 tqdm>=4.65.0 six>=1.16.0 pyyaml>=6.0 omegaconf>=2.3.0 huggingface-hub>=0.20.0 pytorch-lightning>=2.0.0 ml-collections>=0.1.0 matplotlib
+          
+          # Copy README
+          cp README.md dist/dsu-mac-arm/
+
+      # Test workers
+      - name: Test workers
+        run: |
+          dist/dsu-mac-arm/runtime/bin/python dist/dsu-mac-arm/workers/bsroformer_worker.py --help
+          dist/dsu-mac-arm/runtime/bin/python dist/dsu-mac-arm/workers/demucs_worker.py --help
+          dist/dsu-mac-arm/runtime/bin/python dist/dsu-mac-arm/workers/audio_separator_worker.py --help
+
+      # Verify architecture
+      - name: Verify ARM64 architecture
+        run: |
+          file dist/dsu-mac-arm/runtime/bin/python3
+          lipo -info dist/dsu-mac-arm/runtime/bin/python3
+
+      # Package
+      - name: Create archive
+        run: |
+          cd dist
+          tar -czf ../dsu-mac-arm.tar.gz dsu-mac-arm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsu-mac-arm
+          path: dsu-mac-arm.tar.gz
+
+  build-mac-intel:
+    name: Build DSU macOS Intel
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # Install dependencies (Intel - use older PyTorch for compatibility)
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          # PyTorch 2.2.2 for Intel Mac compatibility
+          pip install torch==2.2.2 torchaudio==2.2.2 torchvision==0.17.2
+          pip install "numpy>=2.0.0"
+          pip install audio-separator==0.41.0 demucs>=4.0.0
+          pip install librosa>=0.10.0 soundfile>=0.12.0 samplerate==0.1.0 pydub>=0.25.0 scipy>=1.10.0 resampy>=0.4.0
+          pip install onnx>=1.14.0 onnx2torch>=1.5.0 onnxruntime>=1.16.0
+          pip install einops>=0.7.0 julius>=0.2.7 diffq>=0.2.4 "beartype>=0.18.5,<0.19.0" "rotary-embedding-torch>=0.6.1,<0.7.0" loralib
+          pip install requests>=2.28.0 tqdm>=4.65.0 six>=1.16.0 pyyaml>=6.0 omegaconf>=2.3.0 huggingface-hub>=0.20.0 pytorch-lightning>=2.0.0 ml-collections>=0.1.0 matplotlib
+
+      # Test imports
+      - name: Verify installation
+        run: |
+          python -c "import torch; print(f'PyTorch: {torch.__version__}')"
+          python -c "import demucs; print(f'Demucs: {demucs.__version__}')"
+          python -c "import audio_separator; print(f'Audio-Separator: {audio_separator.__version__}')"
+
+      # Create distribution
+      - name: Create distribution structure
+        run: |
+          mkdir -p dist/dsu-mac-intel/runtime
+          mkdir -p dist/dsu-mac-intel/workers
+          
+          # Copy workers
+          cp -r workers/* dist/dsu-mac-intel/workers/
+          
+          # Create virtual environment in dist
+          python -m venv dist/dsu-mac-intel/runtime
+          
+          # Install into dist runtime
+          dist/dsu-mac-intel/runtime/bin/pip install --upgrade pip
+          dist/dsu-mac-intel/runtime/bin/pip install torch==2.2.2 torchaudio==2.2.2 torchvision==0.17.2
+          dist/dsu-mac-intel/runtime/bin/pip install "numpy>=2.0.0"
+          dist/dsu-mac-intel/runtime/bin/pip install audio-separator==0.41.0 demucs>=4.0.0
+          dist/dsu-mac-intel/runtime/bin/pip install librosa>=0.10.0 soundfile>=0.12.0 samplerate==0.1.0 pydub>=0.25.0 scipy>=1.10.0 resampy>=0.4.0
+          dist/dsu-mac-intel/runtime/bin/pip install onnx>=1.14.0 onnx2torch>=1.5.0 onnxruntime>=1.16.0
+          dist/dsu-mac-intel/runtime/bin/pip install einops>=0.7.0 julius>=0.2.7 diffq>=0.2.4 "beartype>=0.18.5,<0.19.0" "rotary-embedding-torch>=0.6.1,<0.7.0" loralib
+          dist/dsu-mac-intel/runtime/bin/pip install requests>=2.28.0 tqdm>=4.65.0 six>=1.16.0 pyyaml>=6.0 omegaconf>=2.3.0 huggingface-hub>=0.20.0 pytorch-lightning>=2.0.0 ml-collections>=0.1.0 matplotlib
+          
+          # Copy README
+          cp README.md dist/dsu-mac-intel/
+
+      # Test workers
+      - name: Test workers
+        run: |
+          dist/dsu-mac-intel/runtime/bin/python dist/dsu-mac-intel/workers/bsroformer_worker.py --help
+          dist/dsu-mac-intel/runtime/bin/python dist/dsu-mac-intel/workers/demucs_worker.py --help
+          dist/dsu-mac-intel/runtime/bin/python dist/dsu-mac-intel/workers/audio_separator_worker.py --help
+
+      # Verify architecture
+      - name: Verify x86_64 architecture
+        run: |
+          file dist/dsu-mac-intel/runtime/bin/python3
+          lipo -info dist/dsu-mac-intel/runtime/bin/python3
+
+      # Package
+      - name: Create archive
+        run: |
+          cd dist
+          tar -czf ../dsu-mac-intel.tar.gz dsu-mac-intel
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsu-mac-intel
+          path: dsu-mac-intel.tar.gz
+
+  release-mac:
+    name: Create macOS Release
+    needs: [build-mac-arm, build-mac-intel]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dsu-mac-arm
+          path: ./artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dsu-mac-intel
+          path: ./artifacts
+
+      - run: ls -la ./artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}-mac
+          name: ${{ github.ref_name }} macOS - Doctor Sample Unit
+          body: |
+            ## Doctor Sample Unit (DSU) ${{ github.ref_name }} - macOS
+            
+            Lightweight shared runtime for professional audio source separation.
+            
+            ### Features
+            - **85% smaller** than fat executables
+            - **Instant model switching** - No restart needed
+            - **MPS acceleration** - Apple Silicon GPU support
+            - **Persistent workers** - Eliminates startup overhead
+            
+            ### Supported Architectures
+            - **BS-RoFormer** - 28 models
+            - **Audio-Separator** - VR, MDX, MDXC models
+            - **Demucs** - 8 models
+            - **Apollo** - Audio restoration
+            
+            ### Downloads
+            | Platform | File | GPU | PyTorch |
+            |----------|------|-----|---------|
+            | macOS ARM (M1/M2/M3/M4) | dsu-mac-arm.tar.gz | MPS | Latest |
+            | macOS Intel | dsu-mac-intel.tar.gz | None | 2.2.2 |
+            
+            ### Quick Start
+            ```bash
+            # Extract
+            tar -xzf dsu-mac-arm.tar.gz
+            cd dsu-mac-arm
+            
+            # Run worker
+            runtime/bin/python workers/bsroformer_worker.py --worker --models-dir ~/Models
+            ```
+            
+            ### Requirements
+            - **ARM**: macOS 12.3+ on Apple Silicon
+            - **Intel**: macOS 10.15+ on Intel Mac
+          files: |
+            ./artifacts/dsu-mac-arm.tar.gz
+            ./artifacts/dsu-mac-intel.tar.gz
+          draft: false
+          prerelease: false

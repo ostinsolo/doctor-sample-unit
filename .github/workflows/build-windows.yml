@@ -1,0 +1,232 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows-cuda:
+    name: Build DSU Windows (CUDA)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # Install dependencies (CUDA)
+      - name: Install dependencies
+        run: |
+          pip install "cx-Freeze==6.15.16" pefile
+          pip install torch==2.10.0+cu126 torchaudio==2.10.0+cu126 torchvision==0.25.0+cu126 --index-url https://download.pytorch.org/whl/cu126
+          pip install "numpy>=2.0.0" numba llvmlite
+          pip install audio-separator==0.41.0 demucs>=4.0.0
+          pip install librosa>=0.10.0 soundfile>=0.12.0 samplerate==0.1.0 pydub>=0.25.0 scipy>=1.10.0 resampy>=0.4.0
+          pip install onnx>=1.14.0 onnx2torch>=1.5.0 onnxruntime-gpu>=1.16.0
+          pip install einops>=0.7.0 julius>=0.2.7 diffq>=0.2.4 "beartype>=0.18.5,<0.19.0" "rotary-embedding-torch>=0.6.1,<0.7.0" loralib
+          pip install requests>=2.28.0 tqdm>=4.65.0 six>=1.16.0 pyyaml>=6.0 omegaconf>=2.3.0 huggingface-hub>=0.20.0 pytorch-lightning>=2.0.0 ml-collections>=0.1.0 matplotlib
+
+      # Build thin launchers
+      - name: Build DSU Launchers
+        run: python build_dsu_launchers.py
+
+      # Copy runtime to dist
+      - name: Create distribution structure
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/dsu-win-cuda"
+          
+          # Copy executables
+          Copy-Item -Path "bin/*" -Destination "dist/dsu-win-cuda/bin/" -Recurse -Force
+          
+          # Copy workers
+          Copy-Item -Path "workers" -Destination "dist/dsu-win-cuda/workers" -Recurse -Force
+          
+          # Copy launchers
+          Copy-Item -Path "launchers" -Destination "dist/dsu-win-cuda/launchers" -Recurse -Force
+          
+          # Create runtime structure (Python + site-packages)
+          $pythonPath = (Get-Command python).Source | Split-Path
+          $sitePackages = python -c "import site; print(site.getsitepackages()[0])"
+          
+          New-Item -ItemType Directory -Force -Path "dist/dsu-win-cuda/runtime/Scripts"
+          New-Item -ItemType Directory -Force -Path "dist/dsu-win-cuda/runtime/Lib"
+          
+          # Copy Python executable and DLLs
+          Copy-Item -Path "$pythonPath/python.exe" -Destination "dist/dsu-win-cuda/runtime/Scripts/"
+          Copy-Item -Path "$pythonPath/python*.dll" -Destination "dist/dsu-win-cuda/runtime/Scripts/"
+          Copy-Item -Path "$pythonPath/*.dll" -Destination "dist/dsu-win-cuda/runtime/Scripts/" -ErrorAction SilentlyContinue
+          
+          # Copy site-packages
+          Copy-Item -Path $sitePackages -Destination "dist/dsu-win-cuda/runtime/Lib/site-packages" -Recurse -Force
+          
+          # Copy llvmlite.libs (critical for Windows)
+          $llvmliteLibs = Join-Path (Split-Path $sitePackages -Parent) "llvmlite.libs"
+          if (Test-Path $llvmliteLibs) {
+            Copy-Item -Path $llvmliteLibs -Destination "dist/dsu-win-cuda/runtime/Lib/llvmlite.libs" -Recurse -Force
+          }
+        shell: pwsh
+
+      # Test executables
+      - name: Test DSU executables
+        run: |
+          .\dist\dsu-win-cuda\bin\dsu-bsroformer.exe --help
+          .\dist\dsu-win-cuda\bin\dsu-demucs.exe --help
+          .\dist\dsu-win-cuda\bin\dsu-audio-separator.exe --help
+
+      # Create archive
+      - name: Create 7z archive
+        run: |
+          Invoke-WebRequest -Uri https://www.7-zip.org/a/7zr.exe -OutFile 7zr.exe
+          Invoke-WebRequest -Uri https://www.7-zip.org/a/7z2201-x64.exe -OutFile 7zInstaller-x64.exe
+          .\7zr.exe x "7zInstaller-x64.exe"
+          .\7z.exe a -m0=lzma2 -mmt=on -mx=9 "dsu-win-cuda.7z" "dist/dsu-win-cuda"
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsu-win-cuda
+          path: dsu-win-cuda.7z
+
+  build-windows-cpu:
+    name: Build DSU Windows (CPU)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # Install dependencies (CPU)
+      - name: Install dependencies
+        run: |
+          pip install "cx-Freeze==6.15.16" pefile
+          pip install torch==2.10.0+cpu torchaudio==2.10.0+cpu torchvision==0.25.0+cpu --index-url https://download.pytorch.org/whl/cpu
+          pip install "numpy>=2.0.0" numba llvmlite
+          pip install audio-separator==0.41.0 demucs>=4.0.0
+          pip install librosa>=0.10.0 soundfile>=0.12.0 samplerate==0.1.0 pydub>=0.25.0 scipy>=1.10.0 resampy>=0.4.0
+          pip install onnx>=1.14.0 onnx2torch>=1.5.0 onnxruntime>=1.16.0
+          pip install einops>=0.7.0 julius>=0.2.7 diffq>=0.2.4 "beartype>=0.18.5,<0.19.0" "rotary-embedding-torch>=0.6.1,<0.7.0" loralib
+          pip install requests>=2.28.0 tqdm>=4.65.0 six>=1.16.0 pyyaml>=6.0 omegaconf>=2.3.0 huggingface-hub>=0.20.0 pytorch-lightning>=2.0.0 ml-collections>=0.1.0 matplotlib
+
+      # Build thin launchers
+      - name: Build DSU Launchers
+        run: python build_dsu_launchers.py
+
+      # Copy runtime to dist
+      - name: Create distribution structure
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/dsu-win-cpu"
+          
+          # Copy executables
+          Copy-Item -Path "bin/*" -Destination "dist/dsu-win-cpu/bin/" -Recurse -Force
+          
+          # Copy workers
+          Copy-Item -Path "workers" -Destination "dist/dsu-win-cpu/workers" -Recurse -Force
+          
+          # Copy launchers
+          Copy-Item -Path "launchers" -Destination "dist/dsu-win-cpu/launchers" -Recurse -Force
+          
+          # Create runtime structure
+          $pythonPath = (Get-Command python).Source | Split-Path
+          $sitePackages = python -c "import site; print(site.getsitepackages()[0])"
+          
+          New-Item -ItemType Directory -Force -Path "dist/dsu-win-cpu/runtime/Scripts"
+          New-Item -ItemType Directory -Force -Path "dist/dsu-win-cpu/runtime/Lib"
+          
+          # Copy Python executable and DLLs
+          Copy-Item -Path "$pythonPath/python.exe" -Destination "dist/dsu-win-cpu/runtime/Scripts/"
+          Copy-Item -Path "$pythonPath/python*.dll" -Destination "dist/dsu-win-cpu/runtime/Scripts/"
+          Copy-Item -Path "$pythonPath/*.dll" -Destination "dist/dsu-win-cpu/runtime/Scripts/" -ErrorAction SilentlyContinue
+          
+          # Copy site-packages
+          Copy-Item -Path $sitePackages -Destination "dist/dsu-win-cpu/runtime/Lib/site-packages" -Recurse -Force
+          
+          # Copy llvmlite.libs
+          $llvmliteLibs = Join-Path (Split-Path $sitePackages -Parent) "llvmlite.libs"
+          if (Test-Path $llvmliteLibs) {
+            Copy-Item -Path $llvmliteLibs -Destination "dist/dsu-win-cpu/runtime/Lib/llvmlite.libs" -Recurse -Force
+          }
+        shell: pwsh
+
+      # Test executables
+      - name: Test DSU executables
+        run: |
+          .\dist\dsu-win-cpu\bin\dsu-bsroformer.exe --help
+          .\dist\dsu-win-cpu\bin\dsu-demucs.exe --help
+          .\dist\dsu-win-cpu\bin\dsu-audio-separator.exe --help
+
+      # Create archive
+      - name: Create zip archive
+        run: Compress-Archive -Path "dist/dsu-win-cpu" -DestinationPath "dsu-win-cpu.zip"
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsu-win-cpu
+          path: dsu-win-cpu.zip
+
+  release-windows:
+    name: Create Windows Release
+    needs: [build-windows-cuda, build-windows-cpu]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dsu-win-cuda
+          path: ./artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dsu-win-cpu
+          path: ./artifacts
+
+      - run: ls -la ./artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}-win
+          name: ${{ github.ref_name }} Windows - Doctor Sample Unit
+          body: |
+            ## Doctor Sample Unit (DSU) ${{ github.ref_name }} - Windows
+            
+            Lightweight shared runtime for professional audio source separation.
+            
+            ### Features
+            - **85% smaller** than fat executables (~3.5GB vs 15-20GB)
+            - **Instant model switching** - No restart needed
+            - **Persistent workers** - Eliminates 30-40s startup overhead
+            
+            ### Supported Architectures
+            - **BS-RoFormer** - 28 models (vocals, denoise, dereverb, etc.)
+            - **Audio-Separator** - VR, MDX, MDXC models
+            - **Demucs** - 8 models (htdemucs, mdx, etc.)
+            - **Apollo** - Audio restoration
+            
+            ### Downloads
+            | Platform | File | GPU | Size |
+            |----------|------|-----|------|
+            | Windows CUDA | dsu-win-cuda.7z | NVIDIA (CUDA 12.6) | ~1.5GB |
+            | Windows CPU | dsu-win-cpu.zip | None | ~500MB |
+            
+            ### Quick Start
+            ```batch
+            REM Extract and run
+            dsu-win-cuda\bin\dsu-bsroformer.exe --worker --models-dir "C:\Models"
+            ```
+            
+            ### Requirements
+            - **CUDA**: NVIDIA GPU with CUDA 12.6 drivers
+            - **CPU**: Any Windows 10/11 x64
+          files: |
+            ./artifacts/dsu-win-cuda.7z
+            ./artifacts/dsu-win-cpu.zip
+          draft: false
+          prerelease: false
