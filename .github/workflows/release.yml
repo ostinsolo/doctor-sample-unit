@@ -199,18 +199,19 @@ jobs:
           PIP="dist/dsu-mac-intel/runtime/bin/pip"
           $PIP install --upgrade pip
           
-          # Intel Mac: Minimal build matching demucs-cxfreeze approach
-          # torch 2.2.2 is max available, requires numpy<2
+          # Intel Mac: torch 2.2.2 is max available, requires numpy<2
           $PIP install "numpy<2" torch==2.2.2 torchaudio==2.2.2 torchvision==0.17.2
           
-          # Core packages that work with torch 2.2.2
+          # audio-separator 0.21.0 works with torch 2.2.2 (before torch>=2.3 requirement)
+          $PIP install "audio-separator==0.21.0" onnxruntime samplerate
+          $PIP install soundfile omegaconf pytorch-lightning huggingface_hub scipy
+          
+          # Demucs
           $PIP install demucs SoundFile diffq
           
           # BS-RoFormer dependencies
           $PIP install einops julius "beartype>=0.18.5,<0.19.0" "rotary-embedding-torch>=0.6.1,<0.7.0" loralib
-          $PIP install scipy pyyaml omegaconf ml-collections
-          
-          # Note: audio-separator skipped on Intel Mac (requires torch>=2.3)
+          $PIP install pyyaml ml-collections
 
       - name: Test
         run: |
