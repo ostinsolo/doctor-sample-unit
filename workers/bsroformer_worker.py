@@ -15,9 +15,48 @@ This script:
 3. Implements the same JSON protocol as the fat executable
 """
 
-import argparse
 import os
 import sys
+
+# =============================================================================
+# CRITICAL FIX for cx_Freeze + PyTorch 2.x compatibility
+# =============================================================================
+# PyTorch 2.x's torch.compiler.config module uses inspect.getsourcelines()
+# during import, which fails in frozen executables because source code
+# isn't available. This monkey-patch must run BEFORE any torch imports.
+# =============================================================================
+if getattr(sys, 'frozen', False):
+    sys._MEIPASS = os.path.dirname(sys.executable)
+    
+    # Monkey-patch inspect to handle frozen modules gracefully
+    import inspect
+    _original_getsourcelines = inspect.getsourcelines
+    _original_getsource = inspect.getsource
+    _original_findsource = inspect.findsource
+    
+    def _safe_getsourcelines(obj):
+        try:
+            return _original_getsourcelines(obj)
+        except OSError:
+            return ([''], 0)
+    
+    def _safe_getsource(obj):
+        try:
+            return _original_getsource(obj)
+        except OSError:
+            return ''
+    
+    def _safe_findsource(obj):
+        try:
+            return _original_findsource(obj)
+        except OSError:
+            return ([''], 0)
+    
+    inspect.getsourcelines = _safe_getsourcelines
+    inspect.getsource = _safe_getsource
+    inspect.findsource = _safe_findsource
+
+import argparse
 import time
 import json
 import traceback
@@ -122,8 +161,118 @@ def load_models_registry(models_dir=None):
     return DEFAULT_MODELS or {}
 
 
+def detect_model_type_from_checkpoint(checkpoint_path):
+    """Detect model type from checkpoint filename patterns"""
+    filename = os.path.basename(checkpoint_path).lower()
+    
+    if 'mel_band' in filename or 'melband' in filename or 'melbandroformer' in filename:
+        return 'mel_band_roformer'
+    elif 'scnet' in filename:
+        return 'scnet'
+    elif 'mdx23c' in filename or 'drumsep' in filename:
+        return 'mdx23c'
+    elif 'bs_roformer' in filename or 'bsroformer' in filename or 'roformer' in filename:
+        return 'bs_roformer'
+    else:
+        # Default to bs_roformer for resurrection/revive style models
+        return 'bs_roformer'
+
+
+def load_model_from_path(checkpoint_path, config_path=None, model_type=None):
+    """Load a model directly from checkpoint and config paths"""
+    import torch
+    import yaml
+    from ml_collections import ConfigDict
+    
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    
+    # Auto-detect model type if not provided
+    if not model_type:
+        model_type = detect_model_type_from_checkpoint(checkpoint_path)
+    
+    # Find config if not provided
+    if not config_path:
+        # Try to find config next to checkpoint
+        checkpoint_dir = os.path.dirname(checkpoint_path)
+        checkpoint_name = os.path.splitext(os.path.basename(checkpoint_path))[0]
+        
+        # Try various config naming patterns
+        for pattern in [
+            f"{checkpoint_name}.yaml",
+            f"config_{checkpoint_name}.yaml",
+            f"{checkpoint_name}_config.yaml"
+        ]:
+            candidate = os.path.join(checkpoint_dir, pattern)
+            if os.path.exists(candidate):
+                config_path = candidate
+                break
+        
+        # Try bundled configs directory
+        if not config_path:
+            configs_dir = os.path.join(DIST_ROOT, 'configs')
+            if os.path.isdir(configs_dir):
+                # Look for model-specific bundled config
+                for pattern in [
+                    f"config_{checkpoint_name}.yaml",
+                    f"config_resurrection_vocals.yaml",  # Common vocal model
+                    "config_bs_roformer_vocals.yaml"
+                ]:
+                    candidate = os.path.join(configs_dir, pattern)
+                    if os.path.exists(candidate):
+                        config_path = candidate
+                        break
+    
+    if not config_path or not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config not found for checkpoint: {checkpoint_path}")
+    
+    # Load config
+    with open(config_path, 'r') as f:
+        config = ConfigDict(yaml.load(f, Loader=yaml.FullLoader))
+    
+    # Import appropriate model class
+    if model_type == "bs_roformer":
+        from models.bs_roformer import BSRoformer
+        model = BSRoformer(**dict(config.model))
+    elif model_type == "mel_band_roformer":
+        from models.bs_roformer import MelBandRoformer
+        model = MelBandRoformer(**dict(config.model))
+    elif model_type == "scnet":
+        from models.scnet import SCNet
+        model = SCNet(**dict(config.model))
+    elif model_type == "mdx23c":
+        from models.bandit.core.model import MultiMaskMultiSourceBandSplitRNNSimple
+        model = MultiMaskMultiSourceBandSplitRNNSimple(**dict(config.model))
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+    
+    # Load weights
+    state_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    if 'state_dict' in state_dict:
+        state_dict = state_dict['state_dict']
+    elif 'state' in state_dict:
+        state_dict = state_dict['state']
+    model.load_state_dict(state_dict)
+    
+    model.eval()
+    
+    # Build model_info from config
+    stems = getattr(config, 'training', {}).get('instruments', ['vocals', 'other'])
+    if hasattr(config, 'inference') and hasattr(config.inference, 'instruments'):
+        stems = list(config.inference.instruments)
+    
+    model_info = {
+        "type": model_type,
+        "stems": stems,
+        "checkpoint": checkpoint_path,
+        "config": config_path
+    }
+    
+    return model, config, model_info
+
+
 def load_model_impl(model_name, models_dir=None):
-    """Load a model by name"""
+    """Load a model by name from registry"""
     import torch
     import yaml
     from ml_collections import ConfigDict
@@ -353,8 +502,11 @@ def worker_mode(models_dir=None, device="cpu"):
             
             elif cmd == "separate":
                 input_path = job.get("input")
-                output_dir = job.get("output", "output")
+                output_dir = job.get("output_dir") or job.get("output", "output")
                 model_name = job.get("model")
+                model_path = job.get("model_path")  # Direct checkpoint path
+                config_path = job.get("config_path")  # Direct config path
+                model_type = job.get("model_type")  # Optional: bs_roformer, mel_band_roformer, etc.
                 
                 if not input_path:
                     send_json({"status": "error", "message": "No input file specified"})
@@ -365,7 +517,30 @@ def worker_mode(models_dir=None, device="cpu"):
                     continue
                 
                 # Load model if needed
-                if model is None or (model_name and model_name != current_model_name):
+                # Priority: model_path (direct) > model (registry name)
+                if model_path:
+                    # Direct path loading
+                    if model is None or current_model_name != model_path:
+                        try:
+                            send_json({"status": "loading_model", "model": os.path.basename(model_path)})
+                            
+                            if model is not None:
+                                del model
+                                if torch.cuda.is_available():
+                                    torch.cuda.empty_cache()
+                            
+                            model, config, model_info = load_model_from_path(
+                                model_path, config_path, model_type
+                            )
+                            model = model.to(torch_device)
+                            current_model_name = model_path
+                            
+                        except Exception as e:
+                            send_json({"status": "error", "message": f"Failed to load model: {str(e)}", "traceback": traceback.format_exc()})
+                            continue
+                
+                elif model is None or (model_name and model_name != current_model_name):
+                    # Registry-based loading
                     target_model = model_name or "bsrofo_sw"
                     try:
                         send_json({"status": "loading_model", "model": target_model})

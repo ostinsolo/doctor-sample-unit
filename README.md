@@ -1,98 +1,131 @@
 # Doctor Sample Unit (DSU) - Shared Runtime
 
-A lightweight, shared Python runtime for professional audio source separation. Supports multiple architectures with a single runtime installation, dramatically reducing disk space and eliminating startup overhead.
+A properly frozen shared runtime for professional audio source separation. Three small executables (~15KB each) share a common `lib/` folder containing all dependencies - no Python installation required.
 
 ## Key Benefits
 
-| Metric | Old (Fat Executables) | New (Shared Runtime) |
-|--------|----------------------|----------------------|
-| **Download size** | ~6-9 GB | **1.7 GB** |
-| **Disk space** | ~15-20 GB | **~5 GB** |
-| **Startup time** | 30-40 sec | **~3 sec** |
-| **Model switching** | Restart required | **Instant** |
-| **Python required** | No | **No** |
+| Metric | Separate Executables | DSU Shared Runtime |
+|--------|---------------------|-------------------|
+| **Total Size** | ~6 GB (3 x ~2GB) | **~2 GB** |
+| **Startup** | ~8s (torch loads each time) | **~3s** (once per worker) |
+| **Cached Jobs** | N/A (restart each time) | **0.2-1s** (models stay loaded) |
+| **Python Required** | No | **No** |
+
+## Architecture
+
+```
+dsu/
+├── dsu-demucs.exe           # Demucs worker (~15KB entry point)
+├── dsu-bsroformer.exe       # BS-RoFormer worker (~15KB entry point)
+├── dsu-audio-separator.exe  # Audio Separator + Apollo (~15KB entry point)
+├── lib/                     # Shared frozen dependencies (~2GB)
+│   ├── torch/              # PyTorch 2.10.0 + CUDA 12.6
+│   ├── numpy/
+│   ├── librosa/
+│   └── ...
+├── models/                  # Model architectures (bs_roformer, scnet, etc.)
+├── configs/                 # Model configs (YAML files)
+└── VERSION.txt
+```
+
+All three executables share the same `lib/` folder - **~4GB disk space saved** compared to bundling each separately!
 
 ## Supported Architectures
 
 | Architecture | Models | Best For | GPU Support |
 |-------------|--------|----------|-------------|
-| **BS-RoFormer** | 28+ models | Vocals, Denoise, Dereverb | CUDA, MPS |
-| **Demucs** | 8 models | 4/6 stem separation | CUDA, MPS |
-| **Audio-Separator VR** | PTH models | Vocals/Instrumental | CUDA, MPS |
-| **Apollo** | 4 models | Audio restoration | CUDA, MPS |
+| **Demucs** | htdemucs, htdemucs_ft, htdemucs_6s, mdx, mdx_extra, mdx_q | 4/6 stem separation | CUDA, MPS |
+| **BS-RoFormer** | 28+ models | Vocals, Denoise, Dereverb, Drumsep | CUDA, MPS |
+| **Audio-Separator** | VR, MDX, MDXC | Various separation tasks | CUDA, MPS |
+| **Apollo** | lew_uni, lew_v2, edm_big, official | Audio restoration | CUDA, MPS |
 
-## Tested Performance
+## Performance (Persistent Workers)
 
-Sequential test with same input file on Windows CUDA:
+The key advantage: **workers stay running, torch loads once, models stay cached in GPU memory**.
 
-| Step | Architecture | Model | Separation Time | Total Time |
-|------|-------------|-------|-----------------|------------|
-| 1 | Demucs | htdemucs | 2.4s | 9.0s |
-| 2 | BS-RoFormer | dereverb | 2.2s | 12.5s |
-| 3 | Audio-Separator VR | 2_HP-UVR.pth | 6.4s | 11.5s |
-| 4 | Apollo | apollo_lew_v2 | 5.9s | 10.0s |
-| | **Total** | | | **43s** |
+### First Batch (cold start, model loading)
+| Worker | Processing | Total |
+|--------|-----------|-------|
+| Demucs | 2.5s | 8.3s |
+| BS-RoFormer | 3.3s | 8.4s |
+| Apollo | 12.0s | 12.0s |
 
-**Model switching within same worker:**
-- First model: ~3-6s (cold load)
-- Second model: ~0.3-1s (GPU warm)
+### Second Batch (warm, models cached)
+| Worker | Processing | Total | Speedup |
+|--------|-----------|-------|---------|
+| Demucs | 0.24s | **0.24s** | **35x** |
+| BS-RoFormer | 0.42s | **0.43s** | **20x** |
+| Apollo | 0.99s | **1.01s** | **12x** |
 
 ## Quick Start
 
-### Windows CUDA
+### Windows
 
 ```batch
 REM Extract the release
 7z x dsu-win-cuda.7z
 
-REM Test workers
-runtime\Lib\site-packages\python.exe workers\bsroformer_worker.py --help
-runtime\Lib\site-packages\python.exe workers\demucs_worker.py --help
-runtime\Lib\site-packages\python.exe workers\audio_separator_worker.py --help
+REM Start a persistent worker
+dsu\dsu-demucs.exe --worker
+
+REM In another terminal, or via Node.js, send JSON commands to stdin
 ```
 
 ### macOS Apple Silicon
 
 ```bash
 tar -xzf dsu-mac-arm.tar.gz
-cd dsu-mac-arm
-runtime/bin/python workers/bsroformer_worker.py --help
+cd dsu
+
+# Start worker
+./dsu-demucs --worker
 ```
 
 ## Worker JSON Protocol
 
-All workers use the same JSON protocol via stdin/stdout:
+All workers use stdin/stdout JSON communication - perfect for Node.js/Max integration.
+
+### Starting a Worker
+
+```batch
+dsu-demucs.exe --worker
+```
+
+The worker outputs a ready message, then waits for JSON commands on stdin:
+```json
+{"status": "ready", "device": "cuda", "threads": 8}
+```
 
 ### Commands
 
+**Demucs:**
+```json
+{"cmd": "separate", "input": "C:/audio/song.wav", "output": "C:/output/", "model": "htdemucs"}
+```
+
+**BS-RoFormer (with direct model path):**
+```json
+{"cmd": "separate", "input": "C:/audio/song.wav", "output_dir": "C:/output/", "model_path": "C:/Models/bsroformer/weights/resurrection_vocals.ckpt", "config_path": "C:/dsu/configs/config_resurrection_vocals.yaml", "extract_instrumental": true}
+```
+
+**Apollo (audio restoration):**
+```json
+{"cmd": "apollo", "input": "C:/audio/compressed.wav", "output": "C:/output/restored.wav", "model_path": "C:/Models/apollo/apollo_lew_v2.ckpt", "config_path": "C:/Models/apollo/apollo_lew_v2.yaml"}
+```
+
+**Other commands:**
 ```json
 {"cmd": "ping"}
-{"cmd": "list_models"}
-{"cmd": "load_model", "model": "dereverb"}
-{"cmd": "separate", "input": "/path/audio.wav", "output": "/path/out/"}
 {"cmd": "exit"}
-```
-
-### Audio-Separator VR (PTH models)
-
-```json
-{"cmd": "separate", "input": "/audio.wav", "output_dir": "/out/", "model": "2_HP-UVR.pth", "model_file_dir": "/Models/audio-separator"}
-```
-
-### Apollo Restoration
-
-```json
-{"cmd": "apollo", "input": "/audio.wav", "output": "/out/restored.wav", "model_path": "/Models/apollo/apollo_lew_v2.ckpt", "config_path": "/Models/apollo/apollo_lew_v2.yaml"}
 ```
 
 ### Responses
 
 ```json
 {"status": "ready", "device": "cuda", "threads": 8}
-{"status": "loading_model", "model": "dereverb"}
-{"status": "model_loaded", "model": "dereverb", "stems": ["noreverb"]}
+{"status": "loading_model", "model": "htdemucs"}
 {"status": "separating", "input": "song.wav"}
-{"status": "done", "elapsed": 2.5, "files": ["noreverb.wav"]}
+{"status": "done", "elapsed": 2.47, "output_dir": "C:/output/htdemucs/song", "files": ["drums.wav", "bass.wav", "other.wav", "vocals.wav"], "stems": ["drums", "bass", "other", "vocals"]}
 {"status": "error", "message": "..."}
 {"status": "exiting"}
 ```
@@ -101,15 +134,19 @@ All workers use the same JSON protocol via stdin/stdout:
 
 ```javascript
 const { spawn } = require('child_process');
+const path = require('path');
+
+// Path to DSU folder
+const DSU_DIR = 'C:/path/to/dsu';
 
 // Spawn persistent worker
-const worker = spawn('runtime/Lib/site-packages/python.exe', [
-    'workers/bsroformer_worker.py',
-    '--worker',
-    '--models-dir', 'C:/Models/bsroformer'
-]);
+const worker = spawn(
+    path.join(DSU_DIR, 'dsu-demucs.exe'),
+    ['--worker'],
+    { cwd: DSU_DIR, stdio: ['pipe', 'pipe', 'pipe'] }
+);
 
-// Send commands
+// Send JSON command
 function sendCommand(cmd) {
     worker.stdin.write(JSON.stringify(cmd) + '\n');
 }
@@ -121,37 +158,103 @@ worker.stdout.on('data', (data) => {
         try {
             const response = JSON.parse(line);
             console.log('Status:', response.status);
+            
             if (response.status === 'done') {
-                console.log('Separated in', response.elapsed, 'seconds');
+                console.log(`Separated in ${response.elapsed}s`);
                 console.log('Output files:', response.files);
             }
         } catch (e) {
-            // Not JSON, might be warning/log
+            // Non-JSON output (warnings, progress)
+            console.log('[Worker]', line);
         }
     }
 });
 
-// Load model and separate
-sendCommand({ cmd: 'load_model', model: 'dereverb' });
-sendCommand({ cmd: 'separate', input: 'C:/audio/song.wav', output: 'C:/output/' });
+// Wait for ready, then separate
+worker.stdout.once('data', () => {
+    sendCommand({
+        cmd: 'separate',
+        input: 'C:/audio/song.wav',
+        output: 'C:/output/',
+        model: 'htdemucs'
+    });
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+    sendCommand({ cmd: 'exit' });
+    setTimeout(() => worker.kill(), 1000);
+});
 ```
 
-## Directory Structure
+## Building from Source
 
+### Prerequisites
+- Python 3.10
+- cx_Freeze 6.15.16
+
+### Windows CUDA Build
+
+```batch
+REM Create build environment
+python -m venv build_env
+build_env\Scripts\activate
+
+REM Install dependencies
+pip install -r requirements-cuda.txt
+
+REM Build
+python setup.py build_exe
+REM or
+python build_dsu.py
+
+REM Output in dist/dsu/
 ```
-dsu-win-cuda/
-├── runtime/                    # Shared Python environment (~5GB)
-│   └── Lib/site-packages/
-│       └── python.exe
-├── workers/                    # Worker scripts
-│   ├── bsroformer_worker.py
-│   ├── demucs_worker.py
-│   └── audio_separator_worker.py
-├── models/                     # BS-RoFormer model architectures
-├── configs/                    # Model configuration files
-├── utils/                      # Utility modules
-├── apollo/                     # Apollo restoration module
-└── README.md
+
+### Manual Build Script
+
+```batch
+REM build_manual.bat
+call build_env\Scripts\activate
+rd /s /q dist\dsu 2>nul
+python setup.py build_exe
+echo Build complete!
+```
+
+## Technical Details
+
+### Critical Fix: PyTorch 2.x + cx_Freeze
+
+PyTorch 2.x uses `inspect.getsourcelines()` during import, which fails in frozen executables. The workers include a monkey-patch that must run **before** any torch imports:
+
+```python
+if getattr(sys, 'frozen', False):
+    import inspect
+    _original_getsourcelines = inspect.getsourcelines
+    
+    def _safe_getsourcelines(obj):
+        try:
+            return _original_getsourcelines(obj)
+        except OSError:
+            return ([''], 0)
+    
+    inspect.getsourcelines = _safe_getsourcelines
+    # Also patch getsource and findsource
+```
+
+This fix is already included in all worker scripts.
+
+### Build Options
+
+Critical cx_Freeze settings for PyTorch compatibility:
+
+```python
+build_options = {
+    "zip_include_packages": [],      # Don't compress .pyc files
+    "zip_exclude_packages": "*",     # Don't zip anything
+    "optimize": 0,                   # Don't optimize bytecode
+    "replace_paths": [("*", "")],    # Remove absolute paths
+}
 ```
 
 ## Platform Support
@@ -161,81 +264,53 @@ dsu-win-cuda/
 | Windows CUDA | ✅ Ready | 2.10.0+cu126 | NVIDIA CUDA 12.6 |
 | Windows CPU | ✅ Ready | 2.10.0+cpu | None |
 | macOS ARM | ✅ Ready | 2.5.0+ | MPS (Metal) |
-| macOS Intel | 🔧 Manual | 2.2.2 | None |
-
-## Building from Source
-
-### Windows
-
-```batch
-REM Clone repo
-git clone https://github.com/ostinsolo/doctor-sample-unit.git
-cd doctor-sample-unit
-
-REM Build runtime (CUDA)
-build_runtime.bat cuda
-
-REM Or CPU only
-build_runtime.bat cpu
-```
-
-### macOS Apple Silicon
-
-```bash
-chmod +x build_runtime_mac_mps.sh
-./build_runtime_mac_mps.sh
-```
-
-## Model Requirements
-
-### BS-RoFormer
-- `models.json` - Model registry with paths
-- `configs/` - YAML configuration files
-- `weights/` - Checkpoint files (.ckpt)
-
-### Audio-Separator VR
-- `.pth` model files
-- `vr_model_data.json` - Model parameters (in model directory)
-
-### Apollo
-- `.ckpt` checkpoint file
-- `.yaml` config file
 
 ## Troubleshooting
 
+### "could not get source code" error
+This is fixed in the worker scripts. If you see this, ensure the inspect monkey-patch runs before torch imports.
+
 ### "CUDA not available"
 ```batch
-nvidia-smi   REM Check driver
+nvidia-smi
 ```
-Requires NVIDIA driver with CUDA 12.6 support.
+Requires NVIDIA driver supporting CUDA 12.6.
 
-### "Model hash not found"
-Add the model's MD5 hash to `vr_model_data.json` in your models directory.
+### Worker hangs / no output
+When using subprocess, combine stderr with stdout:
+```python
+proc = subprocess.Popen(
+    [exe_path, "--worker"],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,  # Important!
+    text=True,
+    cwd=exe_dir  # Must run from DSU directory
+)
+```
 
-### "No module named 'models'"
-Ensure `models/`, `utils/`, `configs/`, `apollo/` folders are in the same directory as `workers/`.
+### "bin" directory not found
+Ensure you run the worker from the DSU directory (set `cwd` in subprocess).
 
 ## Releases
 
-Download pre-built releases from:
-https://github.com/ostinsolo/doctor-sample-unit/releases
+Download pre-built releases from GitHub Releases.
 
-| Platform | File | Size |
-|----------|------|------|
-| Windows CUDA | dsu-win-cuda.7z | ~1.7 GB |
-| Windows CPU | dsu-win-cpu.zip | ~500 MB |
-| macOS ARM | dsu-mac-arm.tar.gz | ~1 GB |
+| Platform | File | GPU | Size |
+|----------|------|-----|------|
+| Windows CUDA | `dsu-win-cuda.7z` | NVIDIA CUDA 12.6 | ~2 GB |
+| Windows CPU | `dsu-win-cpu.zip` | None | ~800 MB |
+| macOS ARM | `dsu-mac-arm.tar.gz` | MPS (Metal) | ~1.5 GB |
 
 ## License
 
-- **Runtime**: MIT
+- **DSU Runtime**: MIT
 - **PyTorch**: BSD-3
-- **audio-separator**: MIT
 - **Demucs**: MIT
+- **audio-separator**: MIT
 - **Individual models**: Check each model's license
 
 ## Credits
 
 Created by Ostin Solo
 - Website: ostinsolo.co.uk
-- Contact: contact@ostinsolo.co.uk
