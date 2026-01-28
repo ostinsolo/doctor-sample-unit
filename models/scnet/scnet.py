@@ -292,6 +292,7 @@ class SCNet(nn.Module):
             'center': True,
             'normalized': normalized
         }
+        self.register_buffer("stft_window", torch.hann_window(win_size), persistent=False)
 
         self.encoder = nn.ModuleList()
         self.decoder = nn.ModuleList()
@@ -338,11 +339,13 @@ class SCNet(nn.Module):
         # STFT - PyTorch 2.5+ supports MPS, fallback to CPU for older versions
         L = x.shape[-1]
         x = x.reshape(-1, L)
+        stft_config = dict(self.stft_config)
+        stft_config["window"] = self.stft_window.to(device)
         try:
-            x = torch.stft(x, **self.stft_config, return_complex=True)
+            x = torch.stft(x, **stft_config, return_complex=True)
         except Exception:
             # Fallback for older PyTorch on MPS
-            x = torch.stft(x.cpu(), **self.stft_config, return_complex=True).to(device)
+            x = torch.stft(x.cpu(), **stft_config, return_complex=True).to(device)
         x = torch.view_as_real(x)
         x = x.permute(0, 3, 1, 2).reshape(x.shape[0] // self.audio_channels, x.shape[3] * self.audio_channels,
                                           x.shape[1], x.shape[2])
@@ -372,13 +375,15 @@ class SCNet(nn.Module):
         x = x.view(B, n, -1, Fr, T)
         x = x.reshape(-1, 2, Fr, T).permute(0, 2, 3, 1)
         x = torch.view_as_complex(x.contiguous())
+        if x.dtype == torch.complex32:
+            x = x.to(torch.complex64)
         
         # ISTFT - PyTorch 2.5+ supports MPS, fallback to CPU for older versions
         try:
-            x = torch.istft(x, **self.stft_config)
+            x = torch.istft(x, **stft_config)
         except Exception:
             # Fallback for older PyTorch on MPS
-            x = torch.istft(x.cpu(), **self.stft_config).to(device)
+            x = torch.istft(x.cpu(), **stft_config).to(device)
         x = x.reshape(B, len(self.sources), self.audio_channels, -1)
 
         x = x[:, :, :, :-padding]

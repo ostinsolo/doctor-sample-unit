@@ -108,7 +108,9 @@ AUDIO_PACKAGES = [
     # Model dependencies
     "beartype",
     "rotary_embedding_torch",
-    "loralib",
+    # Optional fast attention (used when available)
+    "sageattention",
+    "triton",
     "numba",
     "llvmlite",
     "pytorch_lightning",

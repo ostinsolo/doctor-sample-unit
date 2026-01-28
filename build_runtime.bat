@@ -118,6 +118,34 @@ if "%BUILD_TYPE%"=="cuda" (
 "%RUNTIME_DIR%\Scripts\python.exe" -c "import demucs; print(f'Demucs: {demucs.__version__}')"
 "%RUNTIME_DIR%\Scripts\python.exe" -c "import audio_separator; print(f'Audio-Separator: {audio_separator.__version__}')"
 
+REM -----------------------------------------------------------------------------
+REM Optional performance deps: SDPA + SageAttention (CUDA builds only)
+REM Fail the build if these checks fail, so we don't ship a runtime that silently
+REM falls back to slower paths.
+REM -----------------------------------------------------------------------------
+if "%BUILD_TYPE%"=="cuda" (
+    echo.
+    echo Verifying PyTorch SDPA on CUDA...
+    "%RUNTIME_DIR%\Scripts\python.exe" "%SCRIPT_DIR%tests\test_sdpa_call.py"
+    if errorlevel 1 (
+        echo ERROR: PyTorch SDPA check failed in runtime environment.
+        exit /b 1
+    )
+
+    echo.
+    echo Verifying SageAttention import + kernel...
+    "%RUNTIME_DIR%\Scripts\python.exe" "%SCRIPT_DIR%tests\check_sageattention.py"
+    if errorlevel 1 (
+        echo ERROR: SageAttention is missing or failed to import in runtime environment.
+        exit /b 1
+    )
+    "%RUNTIME_DIR%\Scripts\python.exe" "%SCRIPT_DIR%tests\test_sageattention_kernel.py"
+    if errorlevel 1 (
+        echo ERROR: SageAttention kernel test failed in runtime environment.
+        exit /b 1
+    )
+)
+
 REM Deactivate
 call "%RUNTIME_DIR%\Scripts\deactivate.bat" 2>nul
 

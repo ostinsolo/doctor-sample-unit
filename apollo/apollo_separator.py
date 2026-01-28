@@ -142,7 +142,7 @@ def _configure_cpu_threads(auto_cpu_threads, cpu_threads):
 
 def load_checkpoint(model, checkpoint_path, device):
     """Load model checkpoint, handling different formats"""
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False, mmap=True)
     
     # Handle different checkpoint formats
     if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:

@@ -3,11 +3,48 @@ from packaging import version
 from collections import namedtuple
 
 import os
+import warnings
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
 
 from einops import rearrange, reduce
+
+def _sdpa_is_available_probe(cuda_backend, name: str) -> bool:
+    """
+    Robustly query SDPA backend availability across PyTorch builds.
+
+    Some Windows builds expose these attributes as `None` (or otherwise non-callable).
+    """
+    attr = getattr(cuda_backend, name, None)
+    if attr is None:
+        return False
+    if callable(attr):
+        try:
+            return bool(attr())
+        except Exception:
+            return False
+    return bool(attr)
+
+def _sdpa_call(q, k, v, *, attn_mask, dropout_p: float, is_causal: bool):
+    """
+    Call PyTorch SDPA while:
+    - Avoiding deprecated torch.backends.cuda.sdp_kernel()
+    - Suppressing extremely noisy SDPA backend warnings.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*Flash attention kernel not used.*", category=UserWarning)
+        warnings.filterwarnings("ignore", message=r".*Torch was not compiled with flash attention.*", category=UserWarning)
+        warnings.filterwarnings("ignore", message=r".*Memory efficient kernel not used because.*", category=UserWarning)
+        warnings.filterwarnings("ignore", message=r".*Memory Efficient attention has been runtime disabled.*", category=UserWarning)
+        warnings.filterwarnings("ignore", message=r".*cuDNN attention kernel not used because.*", category=UserWarning)
+        warnings.filterwarnings("ignore", message=r".*cuDNN attention has been runtime disabled.*", category=UserWarning)
+        return F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal
+        )
 
 def _print_once(msg):
     printed = False
@@ -87,17 +124,11 @@ class Attend(nn.Module):
             # Assumes scale is handled internally by sageattn
             # Assumes dropout is NOT handled by sageattn kernel
             # is_causal=False based on how Attend is called in mel_band_roformer
-            out = sageattn(q, k, v, tensor_layout='HND', is_causal=False)
-            return out
             try:
-                return out
-                # print("Attempting SageAttention") # Optional: for debugging
-                out = sageattn(q, k, v, tensor_layout='HND', is_causal=False)
-                return out
+                return sageattn(q, k, v, tensor_layout='HND', is_causal=False)
             except Exception as e:
                 print(f"SageAttention failed with error: {e}. Falling back.")
-                self.use_sage = False # Don't try Sage again if it failed once
-                # Decide fallback: Check if PyTorch SDPA is an option
+                self.use_sage = False  # Don't try Sage again if it failed once
                 if not self._sdpa_checked:
                     if version.parse(torch.__version__) >= version.parse('2.0.0'):
                         self.use_pytorch_sdpa = True
@@ -111,22 +142,62 @@ class Attend(nn.Module):
 
         # --- Priority 2: PyTorch SDPA ---
         if self.use_pytorch_sdpa:
-             # Use PyTorch's Scaled Dot Product Attention (SDPA)
-             # It handles scaling and dropout internally.
-            try:
-                # print("Attempting PyTorch SDPA") # Optional: for debugging
-                # Let PyTorch choose the best backend (Flash V2, Mem Efficient, Math)
-                with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=True, enable_mem_efficient=True):
-                    out = F.scaled_dot_product_attention(
+            # Use PyTorch's Scaled Dot Product Attention (SDPA).
+            # It handles scaling and dropout internally.
+            has_sdpa_backend = False
+            if q.is_cuda and hasattr(torch.backends, "cuda"):
+                cuda_b = torch.backends.cuda
+                # NOTE: On some Windows builds these are `None`; avoid calling them blindly.
+                flash_available = _sdpa_is_available_probe(cuda_b, "is_flash_sdp_available")
+                mem_available = _sdpa_is_available_probe(cuda_b, "is_mem_efficient_sdp_available")
+                math_available = _sdpa_is_available_probe(cuda_b, "is_math_sdp_available")
+                has_sdpa_backend = flash_available or mem_available or math_available
+
+            # Prefer "try SDPA then fallback" rather than depending on probes.
+            if q.is_cuda and hasattr(torch.nn, "attention") and hasattr(torch.nn.attention, "SDPBackend"):
+                backends_enum = torch.nn.attention.SDPBackend
+                enabled_backends = []
+                cuda_b = torch.backends.cuda
+                if _sdpa_is_available_probe(cuda_b, "is_flash_sdp_available") and hasattr(backends_enum, "FLASH_ATTENTION"):
+                    enabled_backends.append(backends_enum.FLASH_ATTENTION)
+                if _sdpa_is_available_probe(cuda_b, "is_mem_efficient_sdp_available") and hasattr(backends_enum, "MEM_EFFICIENT"):
+                    enabled_backends.append(backends_enum.MEM_EFFICIENT)
+                if _sdpa_is_available_probe(cuda_b, "is_math_sdp_available") and hasattr(backends_enum, "MATH"):
+                    enabled_backends.append(backends_enum.MATH)
+                # If probes are missing, still try enabling everything present in the enum.
+                if not enabled_backends:
+                    for attr in ("FLASH_ATTENTION", "MEM_EFFICIENT", "MATH"):
+                        if hasattr(backends_enum, attr):
+                            enabled_backends.append(getattr(backends_enum, attr))
+                if enabled_backends:
+                    try:
+                        with torch.nn.attention.sdpa_kernel(*enabled_backends):
+                            return _sdpa_call(
+                                q, k, v,
+                                attn_mask=None,
+                                dropout_p=self.dropout if self.training else 0.,
+                                is_causal=False
+                            )
+                    except (RuntimeError, TypeError) as e:
+                        if "No available kernel" not in str(e):
+                            raise
+                        _print_sdpa_no_kernel = _print_once("SDPA reported no available kernel; falling back.")
+                        _print_sdpa_no_kernel()
+
+            # Final attempt: call SDPA directly and let it pick (covers builds where probes are unavailable)
+            if q.is_cuda or has_sdpa_backend:
+                try:
+                    return _sdpa_call(
                         q, k, v,
-                        attn_mask=None, # Assuming no explicit mask needed here
-                        dropout_p = self.dropout if self.training else 0.,
-                        is_causal=False # Assuming not needed based on usage context
+                        attn_mask=None,
+                        dropout_p=self.dropout if self.training else 0.,
+                        is_causal=False
                     )
-                return out
-            except Exception as e:
-                 print(f"PyTorch SDPA failed with error: {e}. Falling back to einsum.")
-                 self.use_pytorch_sdpa = False # Fallback to einsum on error
+                except (RuntimeError, TypeError) as e:
+                    if "No available kernel" not in str(e):
+                        raise
+                    _print_sdpa_no_kernel = _print_once("SDPA reported no available kernel; using einsum attention.")
+                    _print_sdpa_no_kernel()
 
 
         # Calculate scale

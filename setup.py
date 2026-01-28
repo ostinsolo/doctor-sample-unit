@@ -112,7 +112,9 @@ OTHER_PACKAGES = [
     # Model dependencies
     "beartype",
     "rotary_embedding_torch",
-    "loralib",
+    # Optional fast attention (used when available)
+    "sageattention",
+    "triton",
     "numba",
     "llvmlite",
     "pytorch_lightning",
@@ -206,8 +208,11 @@ build_options = {
     # CRITICAL: Don't optimize bytecode - can cause issues with torch
     "optimize": 0,
     
-    # Build in dist/dsu subdirectory
-    "build_exe": os.path.join(SCRIPT_DIR, "dist", "dsu"),
+    # Build output directory (allow override to avoid Windows file locks)
+    "build_exe": os.environ.get(
+        "DSU_BUILD_EXE_DIR",
+        os.path.join(SCRIPT_DIR, "dist", "dsu")
+    ),
     
     # CRITICAL: Replace paths to make bundle portable
     "replace_paths": [("*", "")],  # Remove all absolute paths

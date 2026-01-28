@@ -12,9 +12,22 @@ from ml_collections import ConfigDict
 from torch.optim import Adam, AdamW, SGD, RAdam, RMSprop
 from tqdm.auto import tqdm
 from typing import Dict, List, Tuple, Any, Union, Optional
-import loralib as lora
+# LoRA is optional for inference-only runtimes.
+# Keep training/adapter utilities available when installed, but don't hard-require it.
+try:
+    import loralib as lora  # type: ignore
+except Exception:  # pragma: no cover
+    lora = None
 # from .muon import Muon, AdaGO  # Optional for training
 import torch.distributed as dist
+
+
+def _require_loralib() -> None:
+    if lora is None:
+        raise ImportError(
+            "loralib is not installed. This runtime can run non-LoRA inference, "
+            "but LoRA training / adapter features require `loralib`."
+        )
 
 def demix(
     config: ConfigDict,
@@ -85,7 +98,8 @@ def demix(
 
     use_amp = getattr(config.training, 'use_amp', True)
 
-    with torch.cuda.amp.autocast(enabled=use_amp):
+    autocast_device = device.type if isinstance(device, torch.device) else str(device)
+    with torch.amp.autocast(device_type=autocast_device, enabled=use_amp):
         with torch.inference_mode():
             # Initialize result and counter tensors
             req_shape = (num_instruments,) + mix.shape
@@ -106,11 +120,17 @@ def demix(
                 # Extract chunk and apply padding if necessary
                 part = mix[:, i:i + chunk_size].to(device)
                 chunk_len = part.shape[-1]
-                if mode == "generic" and chunk_len > chunk_size // 2:
+                pad_len = chunk_size - chunk_len
+                # NOTE: reflect padding requires pad_len < input_len (per-dimension),
+                # otherwise PyTorch throws:
+                #   "Padding size should be less than the corresponding input dimension"
+                # This can happen for short inputs near the end when chunk_len > chunk_size//2
+                # but (chunk_size - chunk_len) is still larger than chunk_len.
+                if mode == "generic" and pad_len > 0 and chunk_len > chunk_size // 2 and pad_len < chunk_len:
                     pad_mode = "reflect"
                 else:
                     pad_mode = "constant"
-                part = nn.functional.pad(part, (0, chunk_size - chunk_len), mode=pad_mode, value=0)
+                part = nn.functional.pad(part, (0, pad_len), mode=pad_mode, value=0)
 
                 batch_data.append(part)
                 batch_locations.append((i, chunk_len))
@@ -229,7 +249,9 @@ def demix_fast(
     short_audio_pad = 0
     if padded_length < chunk_size:
         short_audio_pad = chunk_size - padded_length
-        mix = nn.functional.pad(mix, (0, short_audio_pad), mode="reflect")
+        # reflect padding requires pad < input_len; fall back to constant for very short files
+        pad_mode = "reflect" if short_audio_pad < padded_length else "constant"
+        mix = nn.functional.pad(mix, (0, short_audio_pad), mode=pad_mode, value=0.0)
         padded_length = mix.shape[-1]
         if should_print:
             print(f"  Short audio padded: {length_init} -> {padded_length} samples")
@@ -238,7 +260,8 @@ def demix_fast(
     extra_pad = 0
     if remainder != 0:
         extra_pad = step - remainder
-        mix = nn.functional.pad(mix, (0, extra_pad), mode="reflect")
+        pad_mode = "reflect" if extra_pad < mix.shape[-1] else "constant"
+        mix = nn.functional.pad(mix, (0, extra_pad), mode=pad_mode, value=0.0)
     
     # === VECTORIZED CHUNK EXTRACTION using unfold ===
     # unfold returns shape: (channels, num_chunks, chunk_size)
@@ -262,7 +285,8 @@ def demix_fast(
     
     use_amp = getattr(config.training, 'use_amp', True)
     
-    with torch.cuda.amp.autocast(enabled=use_amp):
+    autocast_device = device.type if isinstance(device, torch.device) else str(device)
+    with torch.amp.autocast(device_type=autocast_device, enabled=use_amp):
         with torch.inference_mode():
             # Initialize result and counter tensors
             result_length = mix.shape[-1]
@@ -682,12 +706,13 @@ def load_lora_weights(model: torch.nn.Module, lora_path: str, device: str = 'cpu
     None
         The model is updated in place.
     """
-    lora_state_dict = torch.load(lora_path, map_location=device)
+    lora_state_dict = torch.load(lora_path, map_location=device, mmap=True)
     model.load_state_dict(lora_state_dict, strict=False)
 
 
 def get_lora(args, config, model):
     if args.train_lora_loralib:
+        _require_loralib()
         model = bind_lora_to_model(config, model)
         lora.mark_only_lora_as_trainable(model)
     if args.train_lora_peft:
@@ -740,7 +765,7 @@ def load_start_checkpoint(args: argparse.Namespace,
     else:
         device = 'cpu'
         if args.model_type in ['htdemucs', 'apollo']:
-            old_model = torch.load(args.start_check_point, map_location=device, weights_only=False)
+            old_model = torch.load(args.start_check_point, map_location=device, weights_only=False, mmap=True)
             # Fix for htdemucs pretrained models
             if 'state' in old_model:
                 old_model = old_model['state']
@@ -781,6 +806,7 @@ def bind_lora_to_model(config: Dict[str, Any], model: nn.Module) -> nn.Module:
     nn.Module
         The modified model with the replaced layers.
     """
+    _require_loralib()
 
     if 'lora' not in config:
         raise ValueError("Configuration must contain the 'lora' key with parameters for LoRA.")
@@ -945,6 +971,7 @@ def save_weights(
     if args.train_lora_peft:
         model.save_pretrained(store_path + '_lora_')
     elif args.train_lora_loralib:
+        _require_loralib()
         checkpoint["model_state_dict"] = lora.lora_state_dict(model)
     else:
         if dist.is_initialized():

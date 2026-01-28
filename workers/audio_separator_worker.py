@@ -27,6 +27,44 @@ import sys
 # =============================================================================
 if getattr(sys, 'frozen', False):
     sys._MEIPASS = os.path.dirname(sys.executable)
+
+    # Fix for PyTorch DLL loading on Windows frozen builds.
+    # Torch may call os.add_dll_directory with relative paths (e.g. "bin"), which
+    # raises WinError 87. Normalize to absolute and add common DLL dirs.
+    if sys.platform == "win32":
+        _exe_dir = os.path.dirname(sys.executable)
+        _dll_dir_handles = []
+        try:
+            _orig_add_dll_directory = os.add_dll_directory
+
+            class _NoopDLLDir:
+                def close(self):
+                    return None
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            def _safe_add_dll_directory(p):
+                if p and not os.path.isabs(p):
+                    p = os.path.join(_exe_dir, p)
+                if not p or not os.path.isdir(p):
+                    return _NoopDLLDir()
+                return _orig_add_dll_directory(p)
+
+            os.add_dll_directory = _safe_add_dll_directory  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+        for rel in ("", "lib", os.path.join("lib", "torch", "lib"), os.path.join("lib", "torchaudio", "lib")):
+            p = os.path.join(_exe_dir, rel)
+            if os.path.isdir(p):
+                try:
+                    _dll_dir_handles.append(os.add_dll_directory(p))
+                except Exception:
+                    pass
     
     # Monkey-patch inspect to handle frozen modules gracefully
     import inspect
@@ -90,6 +128,66 @@ def send_json(data):
 
 
 # ============================================================================
+# WORKER MODE - SHUTDOWN HANDLING
+# ============================================================================
+
+import signal
+import threading
+import select
+
+# Global shutdown flag
+_shutdown_requested = threading.Event()
+
+def _signal_handler(signum, frame):
+    """Handle termination signals gracefully"""
+    _shutdown_requested.set()
+
+def _stdin_monitor():
+    """
+    Monitor stdin for closure (parent process died).
+    On Windows, stdin.read() blocks forever even after parent dies,
+    so we use a thread that polls stdin.
+    """
+    try:
+        if sys.platform == "win32":
+            # Windows: poll stdin in a loop
+            while not _shutdown_requested.is_set():
+                try:
+                    if sys.stdin.closed:
+                        _shutdown_requested.set()
+                        break
+                    _shutdown_requested.wait(0.5)
+                except Exception:
+                    _shutdown_requested.set()
+                    break
+        else:
+            # Unix: use select
+            while not _shutdown_requested.is_set():
+                try:
+                    readable, _, _ = select.select([sys.stdin], [], [], 0.5)
+                    if readable and sys.stdin.closed:
+                        _shutdown_requested.set()
+                        break
+                except Exception:
+                    _shutdown_requested.set()
+                    break
+    except Exception:
+        _shutdown_requested.set()
+
+
+def _setup_shutdown_handlers():
+    """Install signal handlers for graceful shutdown"""
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+    
+    if sys.platform == "win32":
+        signal.signal(signal.SIGBREAK, _signal_handler)
+    
+    monitor = threading.Thread(target=_stdin_monitor, daemon=True)
+    monitor.start()
+
+
+# ============================================================================
 # WORKER MODE
 # ============================================================================
 
@@ -98,6 +196,11 @@ def worker_mode():
     Persistent worker mode for Node.js integration.
     
     Handles both VR separation and Apollo restoration based on commands.
+    
+    Handles graceful shutdown on:
+    - SIGTERM/SIGINT signals
+    - stdin closure (parent process died)
+    - {"cmd": "exit"} command
     
     Protocol:
         Input (one JSON per line):
@@ -112,6 +215,9 @@ def worker_mode():
             {"status": "done", "files": [...], "elapsed": 12.5}
             {"status": "error", "message": "..."}
     """
+    
+    # Install shutdown handlers
+    _setup_shutdown_handlers()
     
     # Signal loading
     send_json({"status": "loading", "message": "Initializing audio-separator worker..."})
@@ -137,13 +243,18 @@ def worker_mode():
         send_json({"status": "error", "message": f"Failed to initialize: {str(e)}"})
         return 1
     
-    # Main job loop
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        
+    # Main job loop - checks shutdown flag
+    while not _shutdown_requested.is_set():
         try:
+            line = sys.stdin.readline()
+            if not line:
+                # EOF - stdin closed (parent died)
+                break
+            
+            line = line.strip()
+            if not line:
+                continue
+            
             job = json.loads(line)
             cmd = job.get("cmd", "")
             
@@ -186,6 +297,12 @@ def worker_mode():
                 model_name = job.get("model")
                 model_dir = job.get("model_file_dir")
                 
+                # VR-specific settings
+                vr_enable_tta = job.get("vr_enable_tta", False)
+                vr_high_end_process = job.get("vr_high_end_process", False)
+                vr_post_process = job.get("vr_post_process", False)
+                single_stem = job.get("single_stem")
+                
                 if not input_path:
                     send_json({"status": "error", "message": "No input file specified"})
                     continue
@@ -219,8 +336,20 @@ def worker_mode():
                     if separator.model_instance:
                         separator.model_instance.output_dir = output_dir
                     
-                    # Run separation
-                    output_files = separator.separate(input_path)
+                    # Apply VR-specific settings to model instance
+                    if separator.model_instance:
+                        if hasattr(separator.model_instance, 'enable_tta'):
+                            separator.model_instance.enable_tta = vr_enable_tta
+                        if hasattr(separator.model_instance, 'high_end_process'):
+                            separator.model_instance.high_end_process = vr_high_end_process
+                        if hasattr(separator.model_instance, 'post_process_threshold'):
+                            separator.model_instance.post_process_threshold = 0.2 if vr_post_process else None
+                    
+                    # Run separation (with optional single stem)
+                    if single_stem:
+                        output_files = separator.separate(input_path, primary_stem=single_stem)
+                    else:
+                        output_files = separator.separate(input_path)
                     elapsed = time.time() - start_time
                     
                     send_json({
@@ -244,8 +373,8 @@ def worker_mode():
                 config_path = job.get("config_path")
                 feature_dim = job.get("feature_dim")
                 layer = job.get("layer")
-                chunk_seconds = job.get("chunk_seconds", 20.0)
-                chunk_overlap = job.get("chunk_overlap", 2.0)
+                chunk_seconds = job.get("chunk_seconds", 7.0)  # 7s chunks = good balance of speed and VRAM
+                chunk_overlap = job.get("chunk_overlap", 0.5)  # 0.5s overlap for smooth transitions
                 
                 if not input_path:
                     send_json({"status": "error", "message": "No input file specified"})
@@ -320,6 +449,10 @@ def worker_mode():
         except Exception as e:
             send_json({"status": "error", "message": str(e), "traceback": traceback.format_exc()})
     
+    # Determine shutdown reason
+    if _shutdown_requested.is_set():
+        send_json({"status": "shutdown", "reason": "signal_or_parent_died"})
+    
     return 0
 
 
@@ -330,14 +463,23 @@ def worker_mode():
 def main():
     parser = argparse.ArgumentParser(description='Audio Separator Worker (Shared Runtime)')
     parser.add_argument('--worker', action='store_true', help='Run in worker mode')
-    
-    args = parser.parse_args()
-    
+    parser.add_argument('--apollo', action='store_true',
+                        help='Run Apollo restoration CLI')
+
+    args, remaining = parser.parse_known_args()
+
     if args.worker:
         sys.exit(worker_mode())
+    elif args.apollo:
+        sys.argv = [sys.argv[0]] + remaining
+        from apollo.apollo_separator import main as apollo_main
+        apollo_main()
+        sys.exit(0)
     else:
-        print("Usage: python audio_separator_worker.py --worker")
-        sys.exit(1)
+        sys.argv = [sys.argv[0]] + remaining
+        from audio_separator.utils.cli import main as separator_main
+        separator_main()
+        sys.exit(0)
 
 
 if __name__ == '__main__':

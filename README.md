@@ -43,6 +43,39 @@ All three executables share the same `lib/` folder - **~4GB disk space saved** c
 
 The key advantage: **workers stay running, torch loads once, models stay cached in GPU memory**.
 
+## Benchmarking / Timing (reproducible)
+
+To measure **shared runtime load**, **model load**, and **separation time** end-to-end (exactly like Node worker usage), run:
+
+```batch
+runtime\Scripts\python.exe tests\benchmark_worker_e2e.py ^
+  --exe dist\dsu\dsu-bsroformer.exe ^
+  --worker bsroformer ^
+  --models-dir "C:\Users\soloo\Documents\DSU-VSTOPIA\ThirdPartyApps\Models\bsroformer" ^
+  --model bsrofo_sw ^
+  --input "C:\Users\soloo\Documents\0_20_56_1_27_2026_.wav" ^
+  --output-dir "C:\Users\soloo\Desktop\shared_runtime\output_bench" ^
+  --device cuda ^
+  --timeout 1200
+```
+
+This prints a JSON summary:
+- **`t_start_to_first_status_s`**: process start → first JSON line (shared runtime / DLL / Python bootstrap)
+- **`t_start_to_ready_s`**: process start → worker `ready` (imports + basic init)
+- **`t_load_model_s`**: `load_model` command → `model_loaded`
+- **`t_separate_*_wall_s`**: `separate` command → `done` (wall-clock)
+- **`done.elapsed`**: worker-reported separation time (inside the model pipeline)
+
+### Example numbers (RTX 3070 Laptop, Torch 2.10.0+cu126, SageAttention enabled)
+
+From `dist\dsu\dsu-bsroformer.exe` using model `bsrofo_sw` on `0_20_56_1_27_2026_.wav`:
+
+- **Shared runtime / process bootstrap**: ~0.07s to first JSON
+- **Worker ready (imports/init)**: ~2.18s
+- **Model load**: ~4.75s
+- **Separation (cold)**: ~18.94s
+- **Separation (warm, cached)**: ~0.91s
+
 ### First Batch (cold start, model loading)
 | Worker | Processing | Total |
 |--------|-----------|-------|
@@ -129,6 +162,81 @@ The worker outputs a ready message, then waits for JSON commands on stdin:
 {"status": "error", "message": "..."}
 {"status": "exiting"}
 ```
+
+## Ensemble (BS-RoFormer)
+
+Ensembling means **running multiple models on the same input** and then **merging the resulting stems**. This is useful when:
+
+- You want **higher perceived quality** (less artifacts / less bleed) than any single model.
+- Different models are strong on different sources (e.g., one is better drums, another better vocals).
+- You want a more “stable” output on tricky mixes.
+
+### Two kinds of “ensemble” supported
+
+### 1) Model ensemble (recommended)
+
+This runs multiple models and merges each stem with an algorithm (default `avg_wave`).
+
+- **What it does**: model A separates → model B separates → merge `vocals.wav` with `vocals.wav`, etc.
+- **Output layout**: `--store_dir\<input_basename>\{stem}.wav`
+- **Performance**: runs models sequentially, so it’s slower than a single model (but often higher quality).
+
+#### CLI example (Windows, using an external model pack)
+
+```batch
+REM Run an ensemble of two 4-stem models
+runtime\Scripts\python.exe workers\bsroformer_worker.py ^
+  --models-dir "C:\Users\soloo\Documents\DSU-VSTOPIA\ThirdPartyApps\Models\bsroformer" ^
+  --ensemble bsroformer_4stem,scnet_xl_ihf ^
+  --ensemble-type avg_wave ^
+  --input_folder "C:\Users\soloo\Documents\0_20_56_1_27_2026_.wav" ^
+  --store_dir "C:\Users\soloo\Desktop\shared_runtime\output_ensemble_test" ^
+  --overlap 2 --batch-size 1 --fast
+```
+
+#### Flags
+
+- **`--ensemble M1,M2,...`**: comma-separated model names (must exist in `models.json`)
+- **`--ensemble-type`**: how stems are merged:
+  - `avg_wave` (default): weighted average in waveform domain
+  - `median_wave`, `min_wave`, `max_wave`
+  - `avg_fft`, `median_fft`, `min_fft`, `max_fft` (merge in STFT domain)
+- **`--ensemble-weights W1,W2,...`**: optional weights (same count as models). Example: `--ensemble-weights 0.7,0.3`
+- **`--models-dir PATH`**: directory that contains `models.json` and `weights\...`
+
+### 2) File ensemble utility (merge already-rendered audio files)
+
+This is a lower-level helper that **does not run models**. It just merges audio files you already produced.
+
+Typical use case:
+
+- You ran two different separations (or two workers) and want to combine *only* a specific stem (e.g., two `vocals.wav` files).
+
+#### Example
+
+```batch
+REM Merge two already-separated vocal files into one output
+runtime\Scripts\python.exe workers\bsroformer_worker.py --worker --ensemble ^
+  --files "C:\outA\vocals.wav" "C:\outB\vocals.wav" ^
+  --type avg_wave ^
+  --output "C:\out\vocals_ensemble.wav"
+```
+
+### Using ensemble “from the worker” (JSON mode)
+
+The persistent JSON worker (`--worker` + stdin/stdout commands) currently supports:
+
+- `load_model`
+- `separate`
+- `list_models`
+- `get_status`
+
+It does **not** currently implement a single JSON command like `{"cmd":"ensemble", ...}`.
+
+If you need ensembling in a Node/Max workflow today, use one of these patterns:
+
+- **Pattern A (simplest)**: run the **CLI model ensemble** as a subprocess (one-shot job).
+- **Pattern B (persistent)**: run separation twice (two models) via worker(s), then combine stems with the **file ensemble utility** above.
 
 ## Node.js Integration
 
