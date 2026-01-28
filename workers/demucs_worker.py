@@ -96,6 +96,7 @@ def _configure_demucs_cache():
         import torch
         import inspect as _inspect
 
+        # Patch torch.hub.load_state_dict_from_url
         _orig_lsdfu = getattr(torch.hub, "load_state_dict_from_url", None)
         if callable(_orig_lsdfu):
             sig = None
@@ -110,6 +111,20 @@ def _configure_demucs_cache():
                     return _orig_lsdfu(url, *args, **kwargs)
 
                 torch.hub.load_state_dict_from_url = _lsdfu_wrapped  # type: ignore[assignment]
+        
+        # Patch torch.load to default to weights_only=False (PyTorch 2.6+ changed default to True)
+        # This is critical for loading custom Demucs models like inaki
+        _orig_torch_load = torch.load
+        try:
+            sig = _inspect.signature(_orig_torch_load)
+            if "weights_only" in sig.parameters:
+                def _torch_load_wrapped(f, *args, **kwargs):
+                    kwargs.setdefault("weights_only", False)
+                    return _orig_torch_load(f, *args, **kwargs)
+                
+                torch.load = _torch_load_wrapped  # type: ignore[assignment]
+        except Exception:
+            pass
     except Exception:
         pass
 
