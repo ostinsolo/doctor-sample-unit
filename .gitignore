@@ -78,10 +78,19 @@ logs/
 # Local Development / Testing
 # -----------------------------------------------------------------------------
 test_*.py
+test_*.js
 !workers/test_*.py
 main.py
 setup_build_env.bat
 test_build_env.bat
+tests/*_output/
+tests/node_test_output/
+tests/optimized_test_output/
+tests/final_test_output/
+tests/config_path_test/
+tests/configs_dir_test/
+tests/scnet_output/
+tests/debug_output/
 
 # -----------------------------------------------------------------------------
 # Downloaders (bundled with main project, not runtime)
