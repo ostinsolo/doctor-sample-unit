@@ -104,10 +104,16 @@ import traceback
 # ============================================================================
 
 # Get script directory
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# Parent of workers folder (dsu-win-cuda/) contains models/, utils/, etc.
-DIST_ROOT = os.path.dirname(SCRIPT_DIR)
-PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+if getattr(sys, 'frozen', False):
+    # Frozen exe: exe is in dsu/ folder, configs are also in dsu/
+    SCRIPT_DIR = os.path.dirname(sys.executable)
+    DIST_ROOT = SCRIPT_DIR  # configs/ is in same folder as exe
+    PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+else:
+    # Development: script is in workers/ folder
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    DIST_ROOT = os.path.dirname(SCRIPT_DIR)  # parent of workers/
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 
 # Add distribution root to path (contains models/, utils/, configs/, apollo/)
 if os.path.isdir(os.path.join(DIST_ROOT, 'models')):
@@ -490,8 +496,17 @@ def load_model_impl(model_name, models_dir=None):
     
     # Try alternative config path if not found
     if not os.path.exists(config_path):
-        for alt_root in [DIST_ROOT, PROJECT_ROOT, BSROFORMER_DIR]:
-            alt_config = os.path.join(alt_root, model_info["config"])
+        config_filename = os.path.basename(model_info["config"])
+        search_paths = [
+            # Try with full relative path
+            os.path.join(DIST_ROOT, model_info["config"]),
+            # Try just filename in bundled configs
+            os.path.join(DIST_ROOT, "configs", config_filename),
+            # Try in project root
+            os.path.join(PROJECT_ROOT, model_info["config"]),
+            os.path.join(PROJECT_ROOT, "configs", config_filename),
+        ]
+        for alt_config in search_paths:
             if os.path.exists(alt_config):
                 config_path = alt_config
                 break
