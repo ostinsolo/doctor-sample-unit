@@ -108,9 +108,6 @@ AUDIO_PACKAGES = [
     # Model dependencies
     "beartype",
     "rotary_embedding_torch",
-    # Optional fast attention (used when available)
-    "sageattention",
-    "triton",
     "numba",
     "llvmlite",
     "pytorch_lightning",
@@ -158,6 +155,20 @@ PROJECT_PACKAGES = [
 
 # Combine all packages
 ALL_PACKAGES = TORCH_PACKAGES + AUDIO_PACKAGES + STDLIB_PACKAGES + PROJECT_PACKAGES
+
+# =============================================================================
+# CUDA-only packages (only available on Windows/Linux with NVIDIA GPU)
+# These are optional and will be skipped if not installed
+# =============================================================================
+CUDA_OPTIONAL_PACKAGES = ["sageattention", "triton"]
+
+for pkg in CUDA_OPTIONAL_PACKAGES:
+    try:
+        __import__(pkg)
+        ALL_PACKAGES.append(pkg)
+        print(f"  Including optional CUDA package: {pkg}")
+    except ImportError:
+        print(f"  Skipping optional CUDA package (not installed): {pkg}")
 
 # =============================================================================
 # Modules to exclude (reduce size, not needed at runtime)
