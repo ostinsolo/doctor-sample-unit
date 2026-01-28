@@ -82,3 +82,8 @@ test_*.py
 main.py
 setup_build_env.bat
 test_build_env.bat
+
+# -----------------------------------------------------------------------------
+# Downloaders (bundled with main project, not runtime)
+# -----------------------------------------------------------------------------
+downloaders/
