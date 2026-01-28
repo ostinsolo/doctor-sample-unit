@@ -1268,12 +1268,17 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
             
             elif cmd == "load_model":
                 model_name = job.get("model")
-                if not model_name:
-                    send_json({"status": "error", "message": "No model specified"})
+                model_path = job.get("model_path")  # Direct checkpoint path
+                config_path = job.get("config_path")  # Direct config path
+                model_type = job.get("model_type")  # bs_roformer, mel_band_roformer, etc.
+                
+                if not model_name and not model_path:
+                    send_json({"status": "error", "message": "No model or model_path specified"})
                     continue
                 
                 try:
-                    send_json({"status": "loading_model", "model": model_name})
+                    load_identifier = model_path or model_name
+                    send_json({"status": "loading_model", "model": os.path.basename(load_identifier)})
                     
                     # Unload previous model
                     if model is not None:
@@ -1282,14 +1287,21 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()
                     
-                    model, config, model_info = load_model_impl(model_name, models_dir)
+                    # Load by direct path or by registry name
+                    if model_path:
+                        model, config, model_info = load_model_from_path(
+                            model_path, config_path, model_type
+                        )
+                    else:
+                        model, config, model_info = load_model_impl(model_name, models_dir)
+                    
                     model = model.to(torch_device)
                     model_ref[0] = model  # Keep reference for cleanup
-                    current_model_name = model_name
+                    current_model_name = load_identifier
                     
                     send_json({
                         "status": "model_loaded",
-                        "model": model_name,
+                        "model": os.path.basename(load_identifier),
                         "stems": model_info.get("stems", [])
                     })
                     
