@@ -157,6 +157,100 @@ def send_json(data):
     print(json.dumps(data), flush=True)
 
 
+# Global flag for mmap support (checked once at startup)
+_MMAP_SUPPORTED = None
+_MMAP_PREFERRED = True  # Can be set to False for HDD storage
+
+def check_mmap_support():
+    """Check if torch.load supports mmap parameter (PyTorch 2.1+)"""
+    global _MMAP_SUPPORTED
+    if _MMAP_SUPPORTED is not None:
+        return _MMAP_SUPPORTED
+    
+    try:
+        import inspect
+        sig = inspect.signature(torch.load)
+        _MMAP_SUPPORTED = 'mmap' in sig.parameters
+    except Exception:
+        _MMAP_SUPPORTED = False
+    
+    return _MMAP_SUPPORTED
+
+
+def safe_torch_load(checkpoint_path, map_location='cpu', weights_only=False, use_mmap=None):
+    """
+    Safely load a PyTorch checkpoint with mmap support when available.
+    
+    Args:
+        checkpoint_path: Path to the checkpoint file
+        map_location: Device to map tensors to (default: 'cpu')
+        weights_only: If True, only load weights (safer but may fail on some checkpoints)
+        use_mmap: Override mmap behavior:
+                  - None: Auto-detect (use mmap if supported and preferred)
+                  - True: Force mmap (will fallback if not supported)
+                  - False: Disable mmap (use for HDD storage)
+    
+    Returns:
+        Loaded checkpoint dictionary
+    
+    Notes:
+        - mmap=True works best with SSD storage
+        - mmap=True reads from disk on-demand (faster initial load, less RAM)
+        - Older PyTorch versions (< 2.1) don't support mmap
+        - Intel Mac builds may use older PyTorch without mmap support
+    """
+    mmap_available = check_mmap_support()
+    
+    # Determine if we should use mmap
+    if use_mmap is False:
+        # Explicitly disabled (e.g., HDD storage)
+        should_mmap = False
+    elif use_mmap is True:
+        # Explicitly requested - use if available
+        should_mmap = mmap_available
+    else:
+        # Auto: use if available AND preferred
+        should_mmap = mmap_available and _MMAP_PREFERRED
+    
+    try:
+        if should_mmap:
+            return torch.load(checkpoint_path, map_location=map_location, 
+                            weights_only=weights_only, mmap=True)
+        else:
+            return torch.load(checkpoint_path, map_location=map_location, 
+                            weights_only=weights_only)
+    except TypeError as e:
+        # mmap parameter not supported - fallback
+        if 'mmap' in str(e) and should_mmap:
+            # Mark mmap as not supported for future calls
+            global _MMAP_SUPPORTED
+            _MMAP_SUPPORTED = False
+            return torch.load(checkpoint_path, map_location=map_location, 
+                            weights_only=weights_only)
+        raise
+    except Exception as e:
+        # If mmap fails for other reasons (corrupted file on mmap, etc.), try without
+        if should_mmap:
+            try:
+                return torch.load(checkpoint_path, map_location=map_location, 
+                                weights_only=weights_only)
+            except:
+                pass
+        raise
+
+
+def set_mmap_preferred(preferred):
+    """
+    Set whether mmap should be preferred for model loading.
+    Set to False if using HDD storage for better performance.
+    
+    Args:
+        preferred: True for SSD storage, False for HDD storage
+    """
+    global _MMAP_PREFERRED
+    _MMAP_PREFERRED = preferred
+
+
 # ============================================================================
 # MODEL LOADING (imported from bs-roformer-freeze-repo)
 # ============================================================================
@@ -362,8 +456,8 @@ def load_model_from_path(checkpoint_path, config_path=None, model_type=None):
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     
-    # Load weights
-    state_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=False, mmap=True)
+    # Load weights (with safe mmap support)
+    state_dict = safe_torch_load(checkpoint_path, map_location='cpu', weights_only=False)
     if 'state_dict' in state_dict:
         state_dict = state_dict['state_dict']
     elif 'state' in state_dict:
@@ -432,8 +526,8 @@ def load_apollo_model(checkpoint_path, config_path=None):
     # Create model
     model = Apollo(sr=44100, win=20, feature_dim=feature_dim, layer=layer)
     
-    # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False, mmap=True)
+    # Load checkpoint (with safe mmap support)
+    checkpoint = safe_torch_load(checkpoint_path, map_location='cpu', weights_only=False)
     
     # Handle different checkpoint formats
     if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
@@ -543,9 +637,9 @@ def load_model_impl(model_name, models_dir=None):
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     
-    # Load weights (weights_only=False needed for PyTorch 2.6+ checkpoints)
+    # Load weights (with safe mmap support, weights_only=False for PyTorch 2.6+ checkpoints)
     if os.path.exists(checkpoint_path):
-        state_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=False, mmap=True)
+        state_dict = safe_torch_load(checkpoint_path, map_location='cpu', weights_only=False)
         if 'state_dict' in state_dict:
             state_dict = state_dict['state_dict']
         elif 'state' in state_dict:
@@ -1239,6 +1333,37 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
     current_model_name = None
     model_ref = [None]  # Mutable reference for cleanup handler
     
+    # Model cache for keeping multiple models in GPU memory
+    # This enables fast switching between models (e.g., bsroformer_4stem + drumsep)
+    MAX_CACHED_MODELS = 3  # Limit to prevent OOM
+    model_cache = {}  # {model_identifier: (model, config, model_info)}
+    
+    def get_cached_model(identifier):
+        """Get a model from cache if available"""
+        return model_cache.get(identifier)
+    
+    def add_to_cache(identifier, model_tuple):
+        """Add model to cache, evict oldest if full"""
+        nonlocal model_cache
+        if len(model_cache) >= MAX_CACHED_MODELS:
+            # Evict oldest (first inserted)
+            oldest_key = next(iter(model_cache))
+            old_model = model_cache.pop(oldest_key)[0]
+            del old_model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            send_json({"status": "cache_evicted", "model": os.path.basename(oldest_key)})
+        model_cache[identifier] = model_tuple
+    
+    def clear_cache():
+        """Clear all cached models"""
+        nonlocal model_cache
+        for key in list(model_cache.keys()):
+            del model_cache[key][0]
+        model_cache.clear()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    
     # Main job loop - checks shutdown flag on each iteration
     while not _shutdown_requested.is_set():
         try:
@@ -1278,14 +1403,22 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                 
                 try:
                     load_identifier = model_path or model_name
-                    send_json({"status": "loading_model", "model": os.path.basename(load_identifier)})
                     
-                    # Unload previous model
-                    if model is not None:
-                        del model
-                        model_ref[0] = None
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
+                    # Check cache first
+                    cached = get_cached_model(load_identifier)
+                    if cached:
+                        model, config, model_info = cached
+                        model_ref[0] = model
+                        current_model_name = load_identifier
+                        send_json({
+                            "status": "model_loaded",
+                            "model": os.path.basename(load_identifier),
+                            "stems": model_info.get("stems", []),
+                            "cached": True
+                        })
+                        continue
+                    
+                    send_json({"status": "loading_model", "model": os.path.basename(load_identifier)})
                     
                     # Load by direct path or by registry name
                     if model_path:
@@ -1299,10 +1432,14 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                     model_ref[0] = model  # Keep reference for cleanup
                     current_model_name = load_identifier
                     
+                    # Add to cache
+                    add_to_cache(load_identifier, (model, config, model_info))
+                    
                     send_json({
                         "status": "model_loaded",
                         "model": os.path.basename(load_identifier),
-                        "stems": model_info.get("stems", [])
+                        "stems": model_info.get("stems", []),
+                        "cached": False
                     })
                     
                 except Exception as e:
@@ -1329,47 +1466,53 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                     send_json({"status": "error", "message": f"Input file not found: {input_path}"})
                     continue
                 
-                # Load model if needed
+                # Load model if needed (with cache support)
                 # Priority: model_path (direct) > model (registry name)
                 if model_path:
-                    # Direct path loading
+                    # Direct path loading - check cache first
                     if model is None or current_model_name != model_path:
                         try:
-                            send_json({"status": "loading_model", "model": os.path.basename(model_path)})
-                            
-                            if model is not None:
-                                del model
-                                model_ref[0] = None
-                                if torch.cuda.is_available():
-                                    torch.cuda.empty_cache()
-                            
-                            model, config, model_info = load_model_from_path(
-                                model_path, config_path, model_type
-                            )
-                            model = model.to(torch_device)
-                            model_ref[0] = model  # Keep reference for cleanup
-                            current_model_name = model_path
+                            cached = get_cached_model(model_path)
+                            if cached:
+                                model, config, model_info = cached
+                                model_ref[0] = model
+                                current_model_name = model_path
+                            else:
+                                send_json({"status": "loading_model", "model": os.path.basename(model_path)})
+                                
+                                model, config, model_info = load_model_from_path(
+                                    model_path, config_path, model_type
+                                )
+                                model = model.to(torch_device)
+                                model_ref[0] = model  # Keep reference for cleanup
+                                current_model_name = model_path
+                                
+                                # Add to cache
+                                add_to_cache(model_path, (model, config, model_info))
                             
                         except Exception as e:
                             send_json({"status": "error", "message": f"Failed to load model: {str(e)}", "traceback": traceback.format_exc()})
                             continue
                 
                 elif model is None or (model_name and model_name != current_model_name):
-                    # Registry-based loading
+                    # Registry-based loading - check cache first
                     target_model = model_name or "bsrofo_sw"
                     try:
-                        send_json({"status": "loading_model", "model": target_model})
-                        
-                        if model is not None:
-                            del model
-                            model_ref[0] = None
-                            if torch.cuda.is_available():
-                                torch.cuda.empty_cache()
-                        
-                        model, config, model_info = load_model_impl(target_model, models_dir)
-                        model = model.to(torch_device)
-                        model_ref[0] = model  # Keep reference for cleanup
-                        current_model_name = target_model
+                        cached = get_cached_model(target_model)
+                        if cached:
+                            model, config, model_info = cached
+                            model_ref[0] = model
+                            current_model_name = target_model
+                        else:
+                            send_json({"status": "loading_model", "model": target_model})
+                            
+                            model, config, model_info = load_model_impl(target_model, models_dir)
+                            model = model.to(torch_device)
+                            model_ref[0] = model  # Keep reference for cleanup
+                            current_model_name = target_model
+                            
+                            # Add to cache
+                            add_to_cache(target_model, (model, config, model_info))
                         
                     except Exception as e:
                         send_json({"status": "error", "message": f"Failed to load model: {str(e)}"})
@@ -1425,7 +1568,100 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                     "status": "status",
                     "model_loaded": current_model_name,
                     "device": str(torch_device),
-                    "ready": True
+                    "ready": True,
+                    "cached_models": list(model_cache.keys()),
+                    "cache_size": len(model_cache),
+                    "max_cache_size": MAX_CACHED_MODELS
+                })
+            
+            elif cmd == "list_cached":
+                # List all models currently in cache
+                cached_info = []
+                for key, (m, c, info) in model_cache.items():
+                    cached_info.append({
+                        "identifier": key,
+                        "name": os.path.basename(key),
+                        "stems": info.get("stems", []),
+                        "active": key == current_model_name
+                    })
+                send_json({
+                    "status": "cached_models",
+                    "models": cached_info,
+                    "count": len(model_cache),
+                    "max": MAX_CACHED_MODELS
+                })
+            
+            elif cmd == "preload_model":
+                # Preload a model into cache without making it active
+                model_name = job.get("model")
+                model_path = job.get("model_path")
+                config_path = job.get("config_path")
+                model_type = job.get("model_type")
+                
+                if not model_name and not model_path:
+                    send_json({"status": "error", "message": "No model or model_path specified"})
+                    continue
+                
+                try:
+                    load_identifier = model_path or model_name
+                    
+                    # Check if already cached
+                    if get_cached_model(load_identifier):
+                        send_json({
+                            "status": "model_preloaded",
+                            "model": os.path.basename(load_identifier),
+                            "already_cached": True
+                        })
+                        continue
+                    
+                    send_json({"status": "preloading_model", "model": os.path.basename(load_identifier)})
+                    
+                    # Load the model
+                    if model_path:
+                        new_model, new_config, new_info = load_model_from_path(
+                            model_path, config_path, model_type
+                        )
+                    else:
+                        new_model, new_config, new_info = load_model_impl(model_name, models_dir)
+                    
+                    new_model = new_model.to(torch_device)
+                    
+                    # Add to cache (but don't make it the active model)
+                    add_to_cache(load_identifier, (new_model, new_config, new_info))
+                    
+                    send_json({
+                        "status": "model_preloaded",
+                        "model": os.path.basename(load_identifier),
+                        "stems": new_info.get("stems", []),
+                        "cached_count": len(model_cache)
+                    })
+                    
+                except Exception as e:
+                    send_json({"status": "error", "message": f"Failed to preload model: {str(e)}"})
+            
+            elif cmd == "clear_cache":
+                # Clear all cached models
+                count = len(model_cache)
+                clear_cache()
+                model = None
+                config = None
+                model_info = None
+                current_model_name = None
+                model_ref[0] = None
+                send_json({"status": "cache_cleared", "models_cleared": count})
+            
+            elif cmd == "set_storage_type":
+                # Configure mmap preference based on storage type
+                # SSD: use mmap (faster initial load, reads from disk on-demand)
+                # HDD: disable mmap (loading entire model is faster than random seeks)
+                storage_type = job.get("type", "ssd").lower()
+                use_mmap = storage_type == "ssd"
+                set_mmap_preferred(use_mmap)
+                send_json({
+                    "status": "storage_configured",
+                    "type": storage_type,
+                    "mmap_enabled": use_mmap,
+                    "mmap_supported": check_mmap_support()
                 })
             
             else:
@@ -1440,12 +1676,13 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
     if _shutdown_requested.is_set():
         send_json({"status": "shutdown", "reason": "signal_or_parent_died"})
     
-    # Cleanup GPU memory
+    # Cleanup GPU memory - clear cache and current model
+    clear_cache()
     if model is not None:
         del model
         model_ref[0] = None
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     return 0
 

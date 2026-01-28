@@ -99,6 +99,90 @@ import time
 import json
 import traceback
 
+
+# ============================================================================
+# SAFE TORCH LOAD WITH MMAP SUPPORT
+# ============================================================================
+
+# Global flag for mmap support (checked once at startup)
+_MMAP_SUPPORTED = None
+_MMAP_PREFERRED = True  # Can be set to False for HDD storage
+
+def check_mmap_support():
+    """Check if torch.load supports mmap parameter (PyTorch 2.1+)"""
+    global _MMAP_SUPPORTED
+    if _MMAP_SUPPORTED is not None:
+        return _MMAP_SUPPORTED
+    
+    try:
+        import torch
+        import inspect as _inspect
+        sig = _inspect.signature(torch.load)
+        _MMAP_SUPPORTED = 'mmap' in sig.parameters
+    except Exception:
+        _MMAP_SUPPORTED = False
+    
+    return _MMAP_SUPPORTED
+
+
+def safe_torch_load(checkpoint_path, map_location='cpu', weights_only=False, use_mmap=None):
+    """
+    Safely load a PyTorch checkpoint with mmap support when available.
+    
+    Args:
+        checkpoint_path: Path to the checkpoint file
+        map_location: Device to map tensors to (default: 'cpu')
+        weights_only: If True, only load weights (safer but may fail on some checkpoints)
+        use_mmap: Override mmap behavior:
+                  - None: Auto-detect (use mmap if supported and preferred)
+                  - True: Force mmap (will fallback if not supported)
+                  - False: Disable mmap (use for HDD storage)
+    
+    Returns:
+        Loaded checkpoint dictionary
+    """
+    import torch
+    
+    mmap_available = check_mmap_support()
+    
+    # Determine if we should use mmap
+    if use_mmap is False:
+        should_mmap = False
+    elif use_mmap is True:
+        should_mmap = mmap_available
+    else:
+        should_mmap = mmap_available and _MMAP_PREFERRED
+    
+    try:
+        if should_mmap:
+            return torch.load(checkpoint_path, map_location=map_location, 
+                            weights_only=weights_only, mmap=True)
+        else:
+            return torch.load(checkpoint_path, map_location=map_location, 
+                            weights_only=weights_only)
+    except TypeError as e:
+        if 'mmap' in str(e) and should_mmap:
+            global _MMAP_SUPPORTED
+            _MMAP_SUPPORTED = False
+            return torch.load(checkpoint_path, map_location=map_location, 
+                            weights_only=weights_only)
+        raise
+    except Exception as e:
+        if should_mmap:
+            try:
+                return torch.load(checkpoint_path, map_location=map_location, 
+                                weights_only=weights_only)
+            except:
+                pass
+        raise
+
+
+def set_mmap_preferred(preferred):
+    """Set whether mmap should be preferred (False for HDD storage)"""
+    global _MMAP_PREFERRED
+    _MMAP_PREFERRED = preferred
+
+
 # ============================================================================
 # PATH SETUP
 # ============================================================================
@@ -541,6 +625,20 @@ def worker_mode():
                     "separator_model": current_model,
                     "apollo_model": apollo_model_path,
                     "ready": True
+                })
+            
+            elif cmd == "set_storage_type":
+                # Configure mmap preference based on storage type
+                # SSD: use mmap (faster initial load, reads from disk on-demand)
+                # HDD: disable mmap (loading entire model is faster than random seeks)
+                storage_type = job.get("type", "ssd").lower()
+                use_mmap = storage_type == "ssd"
+                set_mmap_preferred(use_mmap)
+                send_json({
+                    "status": "storage_configured",
+                    "type": storage_type,
+                    "mmap_enabled": use_mmap,
+                    "mmap_supported": check_mmap_support()
                 })
             
             else:

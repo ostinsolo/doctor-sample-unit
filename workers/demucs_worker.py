@@ -156,6 +156,90 @@ inspect.getsourcelines = _patched_getsourcelines
 inspect.getsource = _patched_getsource
 inspect.findsource = _patched_findsource
 
+
+# ============================================================================
+# SAFE TORCH LOAD WITH MMAP SUPPORT
+# ============================================================================
+
+# Global flag for mmap support (checked once at startup)
+_MMAP_SUPPORTED = None
+_MMAP_PREFERRED = True  # Can be set to False for HDD storage
+
+def check_mmap_support():
+    """Check if torch.load supports mmap parameter (PyTorch 2.1+)"""
+    global _MMAP_SUPPORTED
+    if _MMAP_SUPPORTED is not None:
+        return _MMAP_SUPPORTED
+    
+    try:
+        import torch
+        import inspect as _inspect
+        sig = _inspect.signature(torch.load)
+        _MMAP_SUPPORTED = 'mmap' in sig.parameters
+    except Exception:
+        _MMAP_SUPPORTED = False
+    
+    return _MMAP_SUPPORTED
+
+
+def safe_torch_load(checkpoint_path, map_location='cpu', weights_only=False, use_mmap=None):
+    """
+    Safely load a PyTorch checkpoint with mmap support when available.
+    
+    Args:
+        checkpoint_path: Path to the checkpoint file
+        map_location: Device to map tensors to (default: 'cpu')
+        weights_only: If True, only load weights (safer but may fail on some checkpoints)
+        use_mmap: Override mmap behavior:
+                  - None: Auto-detect (use mmap if supported and preferred)
+                  - True: Force mmap (will fallback if not supported)
+                  - False: Disable mmap (use for HDD storage)
+    
+    Returns:
+        Loaded checkpoint dictionary
+    """
+    import torch
+    
+    mmap_available = check_mmap_support()
+    
+    # Determine if we should use mmap
+    if use_mmap is False:
+        should_mmap = False
+    elif use_mmap is True:
+        should_mmap = mmap_available
+    else:
+        should_mmap = mmap_available and _MMAP_PREFERRED
+    
+    try:
+        if should_mmap:
+            return torch.load(checkpoint_path, map_location=map_location, 
+                            weights_only=weights_only, mmap=True)
+        else:
+            return torch.load(checkpoint_path, map_location=map_location, 
+                            weights_only=weights_only)
+    except TypeError as e:
+        if 'mmap' in str(e) and should_mmap:
+            global _MMAP_SUPPORTED
+            _MMAP_SUPPORTED = False
+            return torch.load(checkpoint_path, map_location=map_location, 
+                            weights_only=weights_only)
+        raise
+    except Exception as e:
+        if should_mmap:
+            try:
+                return torch.load(checkpoint_path, map_location=map_location, 
+                                weights_only=weights_only)
+            except:
+                pass
+        raise
+
+
+def set_mmap_preferred(preferred):
+    """Set whether mmap should be preferred (False for HDD storage)"""
+    global _MMAP_PREFERRED
+    _MMAP_PREFERRED = preferred
+
+
 # Check for worker mode early (before heavy imports)
 WORKER_MODE = '--worker' in sys.argv
 
@@ -286,13 +370,57 @@ def worker_mode():
     # State
     model = None
     current_model_name = None
+    current_repo = None  # Track current repo for custom models
     model_ref = [None]  # Mutable reference for cleanup
     
-    # Available models
+    # Model cache for keeping multiple models in GPU memory
+    # This enables fast switching between models (e.g., htdemucs_ft + inaki)
+    MAX_CACHED_MODELS = 3  # Limit to prevent OOM
+    model_cache = {}  # {model_identifier: (model, repo_path, stems)}
+    
+    def get_cache_key(model_name, repo_path=None):
+        """Create unique cache key for model+repo combination"""
+        return f"{model_name}|{repo_path or 'default'}"
+    
+    def get_cached_model(model_name, repo_path=None):
+        """Get a model from cache if available"""
+        key = get_cache_key(model_name, repo_path)
+        return model_cache.get(key)
+    
+    def add_to_cache(model_name, repo_path, model_obj, stems):
+        """Add model to cache, evict oldest if full"""
+        nonlocal model_cache
+        key = get_cache_key(model_name, repo_path)
+        if len(model_cache) >= MAX_CACHED_MODELS:
+            # Evict oldest (first inserted)
+            oldest_key = next(iter(model_cache))
+            old_model = model_cache.pop(oldest_key)[0]
+            del old_model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            send_json({"status": "cache_evicted", "model": oldest_key.split('|')[0]})
+        model_cache[key] = (model_obj, repo_path, stems)
+    
+    def clear_cache():
+        """Clear all cached models"""
+        nonlocal model_cache
+        for key in list(model_cache.keys()):
+            del model_cache[key][0]
+        model_cache.clear()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    
+    # Available pretrained models
     AVAILABLE_MODELS = [
         'htdemucs', 'htdemucs_ft', 'htdemucs_6s', 'hdemucs_mmi',
         'mdx', 'mdx_extra', 'mdx_q', 'mdx_extra_q'
     ]
+    
+    # Custom community models (require --repo)
+    CUSTOM_MODELS = {
+        'filosax': 'filosax_demucs_v3_14.22_SDR',
+        'inaki': 'inaki'
+    }
     
     # Main job loop - checks shutdown flag
     while not _shutdown_requested.is_set():
@@ -321,20 +449,43 @@ def worker_mode():
             
             elif cmd == "load_model":
                 model_name = job.get("model", "htdemucs_ft")
+                repo_path = job.get("repo")  # Optional: path to custom model repo
                 
                 try:
+                    # Check cache first
+                    cached = get_cached_model(model_name, repo_path)
+                    if cached:
+                        model, current_repo, stems = cached
+                        model_ref[0] = model
+                        current_model_name = model_name
+                        send_json({
+                            "status": "model_loaded",
+                            "model": model_name,
+                            "stems": stems,
+                            "repo": repo_path,
+                            "cached": True
+                        })
+                        continue
+                    
                     send_json({"status": "loading_model", "model": model_name})
                     
-                    # Unload previous model
-                    if model is not None:
-                        del model
-                        model_ref[0] = None
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                            torch.mps.empty_cache()
+                    # Determine actual model name for custom models
+                    actual_model_name = CUSTOM_MODELS.get(model_name, model_name)
                     
-                    model = get_model(model_name)
+                    # Load model - with or without custom repo
+                    if repo_path:
+                        # Custom model from local repo (e.g., filosax, inaki)
+                        from pathlib import Path
+                        repo = Path(repo_path)
+                        if not repo.is_dir():
+                            raise ValueError(f"Repo path does not exist: {repo_path}")
+                        model = get_model(actual_model_name, repo=repo)
+                        current_repo = repo_path
+                    else:
+                        # Standard pretrained model
+                        model = get_model(actual_model_name)
+                        current_repo = None
+                    
                     model.to(device)
                     model.eval()
                     model_ref[0] = model  # Keep reference for cleanup
@@ -343,10 +494,15 @@ def worker_mode():
                     # Get stems for this model
                     stems = list(model.sources)
                     
+                    # Add to cache
+                    add_to_cache(model_name, repo_path, model, stems)
+                    
                     send_json({
                         "status": "model_loaded",
                         "model": model_name,
-                        "stems": stems
+                        "stems": stems,
+                        "repo": repo_path,
+                        "cached": False
                     })
                     
                 except Exception as e:
@@ -356,6 +512,7 @@ def worker_mode():
                 input_path = job.get("input")
                 output_dir = job.get("output", "output")
                 model_name = job.get("model")
+                repo_path = job.get("repo")  # Optional: path to custom model repo
                 two_stems = job.get("two_stems")  # e.g., "vocals" for vocals + no_vocals
                 shifts = job.get("shifts", 1)
                 overlap = job.get("overlap", 0.25)
@@ -368,23 +525,49 @@ def worker_mode():
                     send_json({"status": "error", "message": f"Input file not found: {input_path}"})
                     continue
                 
-                # Load model if different or not loaded
-                if model is None or (model_name and model_name != current_model_name):
+                # Load model if different or not loaded (including repo change)
+                needs_reload = (
+                    model is None or 
+                    (model_name and model_name != current_model_name) or
+                    (repo_path and repo_path != current_repo)
+                )
+                
+                if needs_reload:
                     target_model = model_name or "htdemucs_ft"
+                    
                     try:
-                        send_json({"status": "loading_model", "model": target_model})
-                        
-                        if model is not None:
-                            del model
-                            model_ref[0] = None
-                            if torch.cuda.is_available():
-                                torch.cuda.empty_cache()
-                        
-                        model = get_model(target_model)
-                        model.to(device)
-                        model.eval()
-                        model_ref[0] = model  # Keep reference for cleanup
-                        current_model_name = target_model
+                        # Check cache first
+                        cached = get_cached_model(target_model, repo_path)
+                        if cached:
+                            model, current_repo, _ = cached
+                            model_ref[0] = model
+                            current_model_name = target_model
+                        else:
+                            send_json({"status": "loading_model", "model": target_model})
+                            
+                            # Determine actual model name for custom models
+                            actual_model_name = CUSTOM_MODELS.get(target_model, target_model)
+                            
+                            # Load model - with or without custom repo
+                            if repo_path:
+                                from pathlib import Path
+                                repo = Path(repo_path)
+                                if not repo.is_dir():
+                                    raise ValueError(f"Repo path does not exist: {repo_path}")
+                                model = get_model(actual_model_name, repo=repo)
+                                current_repo = repo_path
+                            else:
+                                model = get_model(actual_model_name)
+                                current_repo = None
+                            
+                            model.to(device)
+                            model.eval()
+                            model_ref[0] = model  # Keep reference for cleanup
+                            current_model_name = target_model
+                            
+                            # Add to cache
+                            stems = list(model.sources)
+                            add_to_cache(target_model, repo_path, model, stems)
                         
                     except Exception as e:
                         send_json({"status": "error", "message": f"Failed to load model: {str(e)}"})
@@ -482,7 +665,99 @@ def worker_mode():
                     "status": "status",
                     "model_loaded": current_model_name,
                     "device": str(device),
-                    "ready": True
+                    "ready": True,
+                    "cached_models": [k.split('|')[0] for k in model_cache.keys()],
+                    "cache_size": len(model_cache),
+                    "max_cache_size": MAX_CACHED_MODELS
+                })
+            
+            elif cmd == "list_cached":
+                # List all models currently in cache
+                cached_info = []
+                for key, (m, repo, stems) in model_cache.items():
+                    model_name = key.split('|')[0]
+                    cached_info.append({
+                        "model": model_name,
+                        "repo": repo,
+                        "stems": stems,
+                        "active": model_name == current_model_name
+                    })
+                send_json({
+                    "status": "cached_models",
+                    "models": cached_info,
+                    "count": len(model_cache),
+                    "max": MAX_CACHED_MODELS
+                })
+            
+            elif cmd == "preload_model":
+                # Preload a model into cache without making it active
+                model_name = job.get("model", "htdemucs_ft")
+                repo_path = job.get("repo")
+                
+                try:
+                    # Check if already cached
+                    if get_cached_model(model_name, repo_path):
+                        send_json({
+                            "status": "model_preloaded",
+                            "model": model_name,
+                            "already_cached": True
+                        })
+                        continue
+                    
+                    send_json({"status": "preloading_model", "model": model_name})
+                    
+                    # Determine actual model name for custom models
+                    actual_model_name = CUSTOM_MODELS.get(model_name, model_name)
+                    
+                    # Load model - with or without custom repo
+                    if repo_path:
+                        from pathlib import Path
+                        repo = Path(repo_path)
+                        if not repo.is_dir():
+                            raise ValueError(f"Repo path does not exist: {repo_path}")
+                        new_model = get_model(actual_model_name, repo=repo)
+                    else:
+                        new_model = get_model(actual_model_name)
+                    
+                    new_model.to(device)
+                    new_model.eval()
+                    
+                    # Get stems and add to cache
+                    stems = list(new_model.sources)
+                    add_to_cache(model_name, repo_path, new_model, stems)
+                    
+                    send_json({
+                        "status": "model_preloaded",
+                        "model": model_name,
+                        "stems": stems,
+                        "cached_count": len(model_cache)
+                    })
+                    
+                except Exception as e:
+                    send_json({"status": "error", "message": f"Failed to preload model: {str(e)}"})
+            
+            elif cmd == "clear_cache":
+                # Clear all cached models
+                count = len(model_cache)
+                clear_cache()
+                model = None
+                current_model_name = None
+                current_repo = None
+                model_ref[0] = None
+                send_json({"status": "cache_cleared", "models_cleared": count})
+            
+            elif cmd == "set_storage_type":
+                # Configure mmap preference based on storage type
+                # SSD: use mmap (faster initial load, reads from disk on-demand)
+                # HDD: disable mmap (loading entire model is faster than random seeks)
+                storage_type = job.get("type", "ssd").lower()
+                use_mmap = storage_type == "ssd"
+                set_mmap_preferred(use_mmap)
+                send_json({
+                    "status": "storage_configured",
+                    "type": storage_type,
+                    "mmap_enabled": use_mmap,
+                    "mmap_supported": check_mmap_support()
                 })
             
             else:
@@ -497,12 +772,13 @@ def worker_mode():
     if _shutdown_requested.is_set():
         send_json({"status": "shutdown", "reason": "signal_or_parent_died"})
     
-    # Cleanup GPU memory
+    # Cleanup GPU memory - clear cache and current model
+    clear_cache()
     if model is not None:
         del model
         model_ref[0] = None
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     return 0
 
