@@ -197,11 +197,11 @@ include_files = []
 if sys.platform == "win32" and LLVMLITE_LIBS:
     include_files.append((LLVMLITE_LIBS, "lib/llvmlite.libs"))
 
-# Include project folders
-for folder in ["models", "utils", "configs", "apollo"]:
-    folder_path = os.path.join(SCRIPT_DIR, folder)
-    if os.path.exists(folder_path):
-        include_files.append((folder_path, folder))
+# Only include configs folder (YAML files needed at runtime)
+# Note: models, utils, apollo are Python packages bundled via 'packages' list
+configs_path = os.path.join(SCRIPT_DIR, "configs")
+if os.path.exists(configs_path):
+    include_files.append((configs_path, "configs"))
 
 # =============================================================================
 # BUILD OPTIONS - Critical settings from working builds

@@ -271,11 +271,11 @@ def build_dsu():
     # Build include_files list
     include_files = []
     
-    # Include our custom folders
-    for folder in ["models", "utils", "configs", "apollo"]:
-        folder_path = os.path.join(SCRIPT_DIR, folder)
-        if os.path.exists(folder_path):
-            include_files.append((folder_path, folder))
+    # Only include configs folder (YAML files needed at runtime)
+    # Note: models, utils, apollo are Python packages and are bundled via 'packages' list
+    configs_path = os.path.join(SCRIPT_DIR, "configs")
+    if os.path.exists(configs_path):
+        include_files.append((configs_path, "configs"))
     
     # =============================================================================
     # CRITICAL BUILD OPTIONS - from working builds
