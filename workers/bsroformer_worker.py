@@ -99,6 +99,9 @@ import time
 import json
 import traceback
 
+# Import torch AFTER the frozen exe setup code above
+import torch
+
 # ============================================================================
 # PATH SETUP - Find the bs-roformer models directory
 # ============================================================================
