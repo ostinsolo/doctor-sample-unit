@@ -103,6 +103,9 @@ import traceback
 # PATH SETUP - Find the bs-roformer models directory
 # ============================================================================
 
+# Global configs directory (can be set via --configs-dir)
+CONFIGS_DIR = None
+
 # Get script directory
 if getattr(sys, 'frozen', False):
     # Frozen exe: exe is in dsu/ folder, configs are also in dsu/
@@ -506,6 +509,11 @@ def load_model_impl(model_name, models_dir=None):
             os.path.join(PROJECT_ROOT, model_info["config"]),
             os.path.join(PROJECT_ROOT, "configs", config_filename),
         ]
+        # Also try user-specified configs directory
+        if 'CONFIGS_DIR' in globals() and CONFIGS_DIR:
+            search_paths.insert(0, os.path.join(CONFIGS_DIR, config_filename))
+            search_paths.insert(0, os.path.join(CONFIGS_DIR, model_info["config"]))
+        
         for alt_config in search_paths:
             if os.path.exists(alt_config):
                 config_path = alt_config
@@ -1175,7 +1183,7 @@ def _setup_shutdown_handlers():
 # WORKER MODE
 # ============================================================================
 
-def worker_mode(models_dir=None, device="cpu"):
+def worker_mode(models_dir=None, device="cpu", configs_dir=None):
     """
     Persistent worker mode for Node.js integration.
     
@@ -1184,7 +1192,14 @@ def worker_mode(models_dir=None, device="cpu"):
     - SIGTERM/SIGINT signals
     - stdin closure (parent process died)
     - {"cmd": "exit"} command
+    
+    Args:
+        models_dir: Directory containing models.json and model weights
+        device: cuda, cpu, or mps
+        configs_dir: Directory containing config files (fallback for missing configs)
     """
+    global CONFIGS_DIR
+    CONFIGS_DIR = configs_dir
     
     # Install shutdown handlers
     _setup_shutdown_handlers()
@@ -1431,7 +1446,8 @@ def main():
     if "--worker" in sys.argv:
         parser = argparse.ArgumentParser(description='BS-RoFormer Worker (Shared Runtime)')
         parser.add_argument('--worker', action='store_true', help='Run in worker mode')
-        parser.add_argument('--models-dir', type=str, default=None, help='Models directory')
+        parser.add_argument('--models-dir', type=str, default=None, help='Models directory (contains models.json)')
+        parser.add_argument('--configs-dir', type=str, default=None, help='Configs directory (fallback for config files)')
         parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu', 'mps'],
                             help='Device to use')
         parser.add_argument('--ensemble', action='store_true',
@@ -1459,7 +1475,7 @@ def main():
             ensemble_files(ensemble_args)
             sys.exit(0)
         elif args.worker:
-            sys.exit(worker_mode(args.models_dir, args.device))
+            sys.exit(worker_mode(args.models_dir, args.device, args.configs_dir))
         else:
             print("Usage: python bsroformer_worker.py --worker [--models-dir /path] [--device cuda|cpu]")
             print("   or: python bsroformer_worker.py --ensemble --files a.wav b.wav --output res.wav")
