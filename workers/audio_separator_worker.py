@@ -226,6 +226,8 @@ def worker_mode():
     separator = None
     current_model = None
     apollo_model_path = None
+    apollo_model = None  # Cached Apollo model
+    apollo_device = None  # Device Apollo model is on
     
     try:
         # Import heavy modules
@@ -290,6 +292,75 @@ def worker_mode():
                     
                 except Exception as e:
                     send_json({"status": "error", "message": f"Failed to load model: {str(e)}"})
+            
+            elif cmd == "load_apollo":
+                # Preload Apollo model for restoration
+                model_path = job.get("model_path")
+                config_path = job.get("config_path")
+                feature_dim = job.get("feature_dim")
+                layer = job.get("layer")
+                
+                if not model_path:
+                    send_json({"status": "error", "message": "No model_path specified"})
+                    continue
+                
+                try:
+                    send_json({"status": "loading_model", "model": os.path.basename(model_path)})
+                    
+                    import torch
+                    from apollo.apollo_separator import get_device, get_model_config, load_checkpoint
+                    from apollo.look2hear.models.apollo import Apollo
+                    
+                    # Get device
+                    device = get_device()
+                    
+                    # Get config from YAML if provided
+                    if config_path and os.path.exists(config_path):
+                        try:
+                            from omegaconf import OmegaConf
+                            conf = OmegaConf.load(config_path)
+                            if 'model' in conf:
+                                if feature_dim is None:
+                                    feature_dim = conf.model.get('feature_dim', 384)
+                                if layer is None:
+                                    layer = conf.model.get('layer', 6)
+                        except ImportError:
+                            pass
+                    
+                    # Auto-detect from model name if not specified
+                    if feature_dim is None or layer is None:
+                        model_name = os.path.basename(model_path)
+                        auto_config = get_model_config(model_name)
+                        if feature_dim is None:
+                            feature_dim = auto_config['feature_dim']
+                        if layer is None:
+                            layer = auto_config['layer']
+                    
+                    # Unload previous Apollo model
+                    if apollo_model is not None:
+                        del apollo_model
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                    
+                    # Create and load Apollo model
+                    apollo_model = Apollo(sr=44100, win=20, feature_dim=feature_dim, layer=layer)
+                    apollo_model = load_checkpoint(apollo_model, model_path, device)
+                    apollo_model.to(device)
+                    apollo_model.eval()
+                    apollo_device = device
+                    apollo_model_path = model_path
+                    
+                    send_json({
+                        "status": "model_loaded",
+                        "model": os.path.basename(model_path),
+                        "type": "apollo",
+                        "feature_dim": feature_dim,
+                        "layer": layer,
+                        "device": str(device)
+                    })
+                    
+                except Exception as e:
+                    send_json({"status": "error", "message": f"Failed to load Apollo model: {str(e)}"})
             
             elif cmd == "separate":
                 input_path = job.get("input")
@@ -400,30 +471,61 @@ def worker_mode():
                     send_json({"status": "restoring", "input": os.path.basename(input_path)})
                     start_time = time.time()
                     
-                    # Import and run Apollo
-                    from apollo.apollo_separator import restore_audio
+                    # Check if we can use cached Apollo model
+                    use_cached = (apollo_model is not None and 
+                                  apollo_model_path == model_path)
                     
-                    # Ensure output directory exists
-                    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-                    
-                    restore_audio(
-                        input_path=input_path,
-                        output_path=output_path,
-                        model_path=model_path,
-                        config_path=config_path,
-                        feature_dim=feature_dim,
-                        layer=layer,
-                        chunk_seconds=chunk_seconds,
-                        overlap_seconds=chunk_overlap
-                    )
+                    if use_cached:
+                        # Use cached model - much faster!
+                        import torch
+                        from apollo.apollo_separator import load_audio, save_audio, _chunk_restore
+                        
+                        # Load input audio
+                        audio = load_audio(input_path)
+                        audio = audio.to(apollo_device)
+                        
+                        # Process with chunking
+                        total_samples = audio.shape[-1]
+                        sr = 44100
+                        duration_seconds = total_samples / sr
+                        
+                        if chunk_seconds > 0 and duration_seconds > chunk_seconds:
+                            restored = _chunk_restore(apollo_model, audio, sr, chunk_seconds, chunk_overlap, apollo_device)
+                        else:
+                            with torch.inference_mode():
+                                restored = apollo_model(audio)
+                        
+                        # Ensure output directory exists
+                        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+                        
+                        # Save output
+                        save_audio(output_path, restored)
+                    else:
+                        # Load fresh (first time or different model)
+                        from apollo.apollo_separator import restore_audio
+                        
+                        # Ensure output directory exists
+                        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+                        
+                        restore_audio(
+                            input_path=input_path,
+                            output_path=output_path,
+                            model_path=model_path,
+                            config_path=config_path,
+                            feature_dim=feature_dim,
+                            layer=layer,
+                            chunk_seconds=chunk_seconds,
+                            overlap_seconds=chunk_overlap
+                        )
+                        apollo_model_path = model_path
                     
                     elapsed = time.time() - start_time
-                    apollo_model_path = model_path
                     
                     send_json({
                         "status": "done",
                         "elapsed": round(elapsed, 2),
-                        "files": [output_path]
+                        "files": [output_path],
+                        "cached": use_cached
                     })
                     
                 except Exception as e:
