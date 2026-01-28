@@ -28,7 +28,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Application branding
 APP_NAME = "Doctor Sample Unit"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.3.0"
 APP_COMPANY = "Doctor Sample Unit"
 APP_COPYRIGHT = "Copyright (c) 2026 Doctor Sample Unit"
 

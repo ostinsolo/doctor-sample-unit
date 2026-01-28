@@ -246,7 +246,7 @@ executables = [
 # =============================================================================
 setup(
     name="dsu",
-    version="1.1.0",
+    version="1.3.0",
     description="Doctor Sample Unit - Shared Audio Processing Runtime",
     options={"build_exe": build_options},
     executables=executables,
