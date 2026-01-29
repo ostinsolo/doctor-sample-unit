@@ -4,11 +4,21 @@
 
 The DSU (Deep Stem Unmixer) Worker System provides three persistent worker processes for audio separation and restoration:
 
-1. **dsu-demucs.exe** - Demucs hybrid transformer separation
-2. **dsu-bsroformer.exe** - BS-RoFormer, MelBand-RoFormer, SCNet, MDX23C separation
-3. **dsu-audio-separator.exe** - VR architecture separation + Apollo restoration
+1. **dsu-demucs** (Windows: `dsu-demucs.exe`) - Demucs hybrid transformer separation
+2. **dsu-bsroformer** (Windows: `dsu-bsroformer.exe`) - BS-RoFormer, MelBand-RoFormer, SCNet, MDX23C separation
+3. **dsu-audio-separator** (Windows: `dsu-audio-separator.exe`) - VR architecture separation + Apollo restoration
 
 All workers use a JSON-over-stdin/stdout protocol for Node.js integration.
+
+### Platforms & PyTorch
+
+| Platform | PyTorch | GPU | Executables |
+|----------|---------|-----|-------------|
+| Windows CUDA | 2.10.x+cu126 | NVIDIA | `dsu-*.exe` |
+| Windows CPU | 2.10.x+cpu | None | `dsu-*.exe` |
+| **macOS ARM (M1/M2/M3)** | **2.10.x** | **MPS (Metal)** | `dsu-*` (no extension) |
+
+Mac ARM uses **PyTorch 2.10** (not 2.5). See `requirements-mac-mps.txt`. Validated with runtime and frozen `dist/dsu/` builds.
 
 ---
 
@@ -114,7 +124,12 @@ All workers use a JSON-over-stdin/stdout protocol for Node.js integration.
   "input": "/path/to/audio.wav",
   "output_dir": "/output/dir",
   "model": "UVR-MDX-NET-Inst_HQ_3.onnx",
-  "model_file_dir": "/path/to/models"
+  "model_file_dir": "/path/to/models",
+  "vr_aggression": 5,           // -100..100, typically 5 (optional). Maps to VR aggressiveness; we pass through to audio-separator.
+  "vr_enable_tta": false,
+  "vr_high_end_process": false,
+  "vr_post_process": false,
+  "single_stem": "Instrumental" // or "Vocals" (optional)
 }
 
 // Apollo restoration
@@ -130,6 +145,16 @@ All workers use a JSON-over-stdin/stdout protocol for Node.js integration.
   "chunk_overlap": 0.5        // Overlap between chunks
 }
 // Response: {"status": "done", "elapsed": 1.47, "files": ["/path/to/restored.wav"]}
+
+// Batch: run multiple commands in one request (same worker, same order)
+{
+  "cmd": "batch",
+  "jobs": [
+    {"cmd": "separate", "input": "a.wav", "output_dir": "/out", "model": "3_HP-Vocal-UVR.pth", "model_file_dir": "/models"},
+    {"cmd": "apollo", "input": "/out/a_(Instrumental).wav", "output": "/out/restored.wav", "model_path": "/models/apollo.ckpt", "config_path": "/models/apollo.yaml"}
+  ]
+}
+// Response: {"status": "done"|"error", "results": [{...}, {...}], "message": "..."}
 ```
 
 ---
@@ -143,6 +168,38 @@ All workers use a JSON-over-stdin/stdout protocol for Node.js integration.
 | Worker startup | 2.5-4.4s | 0s (already running) |
 | Model loading | 6-13s | 0s (already loaded) |
 | **Processing** | - | **0.7-1.5s** |
+
+### Mac ARM (PyTorch 2.10, MPS) – 4s test audio
+
+From `tests/run_benchmarks_mac.sh` / `benchmark_worker_e2e.py`:
+
+| Worker | Ready | Model load | Separate (cold) | Separate (warm) |
+|--------|-------|------------|-----------------|-----------------|
+| Demucs htdemucs | ~0.64s | ~0.19s | ~0.9s | ~0.43s |
+| BS-RoFormer bsrofo_sw | ~0.73s | ~18.5s | ~10.2s | ~4.3s |
+
+Mac uses **PyTorch 2.10**; MPS backend. Models dir: `~/Documents/DSU/ThirdPartyApps/Models` (or `DSU_MODELS`).
+
+**Node optimized workflow** (`run_optimized_workflow.js`, BS-RoFormer model1=bsroformer_4stem, model2=scnet_xl_ihf, 4s, MPS):
+
+| Step | Total | Processing | Overhead |
+|------|-------|------------|----------|
+| model1 COLD | ~5.0s | ~3.7s | ~1.3s |
+| model1 CACHED | ~3.0s | ~3.0s | ~0 |
+| model2 SWITCH | ~10.3s | ~9.9s | ~0.4s |
+| model1 SWITCH BACK | ~6.1s | ~6.1s | ~0 |
+
+### MPS and native PyTorch ops
+
+We use **MPS** for all Mac ARM architectures (Demucs, BS-RoFormer, Audio-Separator, Apollo). PyTorch’s built‑in layers run on MPS without extra dependencies:
+
+- **Convs, matmul, etc.** — `nn.Conv1d` / `Conv2d`, `torch.matmul`, and similar ops use MPS when the model and tensors are on `mps`. We already place models and inputs on MPS via `model.to(device)` and `input.to(device)` in the workers.
+- **Attention** — `nn.MultiheadAttention` and the transformer layers in Demucs / BS-RoFormer use MPS where the tensors are on `mps`. They’re slower than CUDA but work. Some dependency code (e.g. audio_separator’s `attend`) uses CUDA‑specific SDP/flash attention when on CUDA and falls back to a CPU‑friendly path on MPS; the underlying attention still runs on MPS when inputs are on MPS.
+- **STFT / ISTFT** — In **PyTorch 2.10**, `torch.stft` and `torch.istft` **run on MPS** (verified). Some upstream code (e.g. audio_separator’s `uvr_lib` STFT/ISTFT) still uses a **CPU fallback** when the device is MPS (a conservative workaround from when MPS didn’t support these ops). The main model forward (convs, attention, etc.) stays on MPS; only the STFT/ISTFT steps are moved to CPU and back. Upstream could optionally try MPS for STFT/ISTFT to reduce CPU round‑trips.
+
+**Implementation:** We explicitly select MPS when available (`get_device()` in Apollo, device selection in Demucs / Audio-Separator workers: CUDA → MPS → CPU) and use `torch.autocast(device_type="mps")` where it helps (e.g. Audio-Separator VR).
+
+**Summary:** We already use native PyTorch MPS ops for our architectures. No extra dependencies are required. Remaining CPU use is mainly the optional STFT/ISTFT fallback in dependencies; that could be revisited as PyTorch MPS support evolves.
 
 ### Optimization Strategies
 
@@ -259,6 +316,17 @@ Based on benchmarks:
 3. **Same model = instant** (~0.6s)
 4. **Model switch = 1-4s** - acceptable for different operations
 5. **Group by model** when processing multiple files
+
+### Sequence pipeline (real use case)
+
+Often the project runs **chains**: same file through several archs in order, each step’s **output** = next step’s **input**:
+
+```
+input.wav → [VR] → instrumental.wav → [Apollo] → restored.wav
+```
+
+- Use **one worker** (or minimal workers) and **keep them alive** between steps.
+- **`run_sequence_pipeline.js`** exercises this: `--sequence vr,apollo` (single audio-separator) or `bsroformer,apollo` (bsroformer + audio-separator). See **`tests/README_NODE_TESTS.md`**.
 
 ---
 
@@ -630,7 +698,7 @@ Common causes and fixes:
 
 ## Audio I/O
 
-All workers use **soundfile** for audio I/O to avoid torchcodec dependency issues:
+All workers use **soundfile** for audio I/O to avoid torchcodec dependency issues (Windows and **Mac**):
 
 ```python
 # Loading audio
@@ -641,10 +709,8 @@ audio, sr = sf.read(input_path)
 sf.write(output_path, audio, sample_rate, subtype='PCM_16')
 ```
 
-This ensures:
-- No torchcodec/ffmpeg dependency issues
-- Consistent WAV output format
-- Cross-platform compatibility
+- **Demucs CLI**: `demucs_worker.py` patches `demucs.audio.save_audio` to use soundfile so frozen `dsu-demucs` (CLI mode) avoids `torchaudio.save` → torchcodec. Worker mode already used soundfile.
+- No torchcodec/ffmpeg dependency issues, consistent WAV output, cross-platform compatibility.
 
 ---
 
@@ -670,8 +736,9 @@ Config files store these parameters. Wrong values cause model loading to fail.
 ### ✅ Completed
 
 1. **Soundfile-based audio I/O** (Jan 2026)
-   - Replaced torchaudio with soundfile
-   - Eliminated torchcodec dependency issues
+   - Replaced torchaudio save with soundfile
+   - Eliminated torchcodec dependency issues (Windows and **Mac**)
+   - Demucs CLI patch in `demucs_worker.py` so frozen `dsu-demucs` uses soundfile; worker mode already did
    - Cleaner, simpler code
 
 2. **Model caching** (Jan 2026)
@@ -705,6 +772,12 @@ Config files store these parameters. Wrong values cause model loading to fail.
    - Single worker is **17% faster** than 3 parallel workers
    - Recommendation: Start workers on-demand, not all at once
 
+8. **Mac ARM + PyTorch 2.10** (Jan 2026)
+   - **PyTorch 2.10** on macOS Apple Silicon (MPS). Not 2.5; see `requirements-mac-mps.txt`.
+   - Frozen builds produce `dsu-demucs`, `dsu-bsroformer`, `dsu-audio-separator` (no `.exe`).
+   - `tests/run_benchmarks_mac.sh` for Demucs, BS-RoFormer, Audio-Separator, Apollo (4s/40s).
+   - Default models dir: `~/Documents/DSU/ThirdPartyApps/Models`. Override with `DSU_MODELS`.
+
 ### 🔄 In Progress
 
 - Progress reporting for long operations
@@ -720,40 +793,52 @@ Config files store these parameters. Wrong values cause model loading to fail.
 
 ## Testing
 
-### Test Files Location
+### Test Files & Paths
+
+- **Models dir**: `~/Documents/DSU/ThirdPartyApps/Models` (or `DSU_MODELS`). Contains `bsroformer/`, `audio-separator/`, `apollo/`, `demucs/`.
+- **Test audio**: `tests/audio/`. Create with `python tests/generate_test_audio.py` (adds `test_4s.wav`, `test_40s.wav`, etc.).
+- **Index**: `tests/README.md`. **Benchmarks**: `tests/README_BENCHMARKS.md`. **Node tests (Max/MSP)**: `tests/README_NODE_TESTS.md`.
+
+### Test Layout
 
 ```
 tests/
-├── test_demucs_exe.py              # Demucs worker test
-├── test_bsroformer_exe.py          # BSRoformer worker test
-├── test_apollo_exe.py              # Apollo (via BSRoformer) test
-├── test_audio_separator_apollo.py  # Apollo (via audio-separator) test
-├── test_sequential_workflow.py     # Cold start timing test
-├── test_preloaded_workflow.py      # Optimized workflow test
-├── test_demucs_worker_cache_and_load.py  # Cache verification
-├── test_torchaudio_save_without_torchcodec.py  # Audio I/O test
-├── test_exe_loading_speed.py       # Model loading speed benchmark
-├── test_model_loading_profile.py   # torch.load profiling (mmap test)
-├── test_full_sequence_benchmark.py # Full sequence timing test
-├── test_parallel_vs_sequential.py  # Worker configuration comparison
-├── test_long_audio_single.py       # 4-minute audio processing test
-├── quick_switch.py                 # Quick model switching test
-└── create_long_audio.py            # Create 4-min test audio
+├── README.md                       # Index
+├── README_BENCHMARKS.md            # Python benchmarks, 4s/40s
+├── README_NODE_TESTS.md            # Node tests, optimized + sequence pipeline
+├── node_test_config.js             # Shared config (Mac + Windows)
+├── run_sequence_pipeline.js        # Node: input→op1→op2→… (vr,apollo / bsroformer,apollo)
+├── run_optimized_workflow.js       # Node: COLD→CACHED→SWITCH, real files
+├── test_workers_optimized.js       # Node: all workers, preload+cache
+├── test_all_workers_final.js       # Node: cold vs cached, performance_report
+├── benchmark_worker_e2e.py         # E2E timings
+├── run_benchmarks_mac.sh           # Mac benchmark runner (4s/40s)
+├── generate_test_audio.py          # test_4s.wav, test_40s.wav, etc.
+├── create_long_audio.py            # 4-min test audio
+├── run_bsroformer_models.js /.py   # BS-RoFormer via Python CLI
+├── debug/                          # One-off checks (SDPA, SageAttention, etc.)
+└── audio/
 ```
 
 ### Running Tests
 
 ```bash
-# Test individual workers
-python tests/test_demucs_exe.py
-python tests/test_bsroformer_exe.py
-python tests/test_audio_separator_apollo.py
+# Test audio
+python tests/generate_test_audio.py
 
-# Test sequential workflow
-python tests/test_sequential_workflow.py
+# Mac benchmarks (Python)
+./tests/run_benchmarks_mac.sh
+./tests/run_benchmarks_mac.sh 40
 
-# Test optimized (preloaded) workflow
-python tests/test_preloaded_workflow.py
+# Node optimized workflow (Max/MSP)
+node tests/run_sequence_pipeline.js --input tests/audio/test_4s.wav --sequence vr,apollo
+node tests/run_optimized_workflow.js --worker bsroformer --input tests/audio/test_4s.wav
+node tests/test_workers_optimized.js
+node tests/test_all_workers_final.js
+
+# Manual E2E (Python)
+python tests/benchmark_worker_e2e.py --exe dist/dsu/dsu-demucs --worker demucs \
+  --model htdemucs --input tests/audio/test_4s.wav --output-dir tests/benchmark_output/demucs --device mps
 ```
 
 ### Expected Results
@@ -774,21 +859,24 @@ python tests/test_preloaded_workflow.py
 ### Common Issues
 
 1. **Model not found**
-   - Check model_path is absolute path
+   - Use **absolute paths** for `input`, `output` / `output_dir`, `model_path`, `config_path`. Workers often run with `cwd` = executable directory.
    - Verify checkpoint file exists
    - Check config_path for BSRoformer models
 
-2. **CUDA out of memory**
+2. **CUDA / MPS out of memory**
    - Reduce chunk_seconds for Apollo
    - Process shorter audio segments
    - Close other GPU applications
 
 3. **Worker not responding**
-   - Check stderr for Python errors
+   - Check stderr for Python errors (use `stderr=subprocess.STDOUT` when spawning)
    - Verify executable path is correct
-   - Ensure CUDA drivers are installed
+   - Windows: ensure CUDA drivers installed. Mac: MPS uses built-in Metal.
 
-4. **Wrong output quality**
+4. **Mac: torchcodec / torchaudio.save errors**
+   - Use soundfile for I/O. Demucs CLI is patched in `demucs_worker.py`; worker mode uses soundfile. Ensure you're on a build that includes this patch.
+
+5. **Wrong output quality**
    - Verify config file matches checkpoint
    - Check feature_dim and layer parameters
    - Ensure correct model_type is specified
@@ -798,12 +886,12 @@ python tests/test_preloaded_workflow.py
 ## File Locations
 
 ```
-Executables:     dist/dsu/dsu-*.exe
+Executables:     dist/dsu/dsu-*       (Mac/Linux: no extension; Windows: dsu-*.exe)
 Workers:         workers/*.py
 Configs:         configs/*.yaml
-Models:          [user-specified models directory]
-Test audio:      tests/audio/test_mix.wav
-Test output:     tests/*/
+Models:          ~/Documents/DSU/ThirdPartyApps/Models (or DSU_MODELS)
+Test audio:      tests/audio/         (test_4s.wav, test_40s.wav, test_mix.wav, ...)
+Benchmark out:   tests/benchmark_output/
 ```
 
 ---

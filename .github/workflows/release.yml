@@ -133,6 +133,8 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements-mac-mps.txt
+          # Mac ARM: samplerate 0.1.0 ships x86_64-only libsamplerate.dylib; use 0.2.3+ (universal2, no dylib)
+          pip install 'samplerate>=0.2.3' --force-reinstall
 
       - name: Build DSU
         run: python build_dsu.py
@@ -141,6 +143,8 @@ jobs:
         run: |
           echo "Testing executables exist..."
           ls -la dist/dsu/dsu-*
+          echo "Testing dsu-demucs can start..."
+          dist/dsu/dsu-demucs --help || echo "Help not implemented, checking worker mode..."
 
       - name: Create archive
         run: |

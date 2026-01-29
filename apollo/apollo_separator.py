@@ -28,9 +28,8 @@ def get_device():
     """Get best available device (CUDA > MPS > CPU)"""
     if torch.cuda.is_available():
         return torch.device('cuda')
-    # MPS has issues with complex numbers in STFT, force CPU for now
-    # elif torch.backends.mps.is_available():
-    #     return torch.device('mps')
+    if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
+        return torch.device('mps')
     return torch.device('cpu')
 
 
@@ -215,9 +214,9 @@ def restore_audio(
     device = get_device()
     print(f"[Apollo] Using device: {device}")
 
-    # Use smaller default chunks on CUDA to avoid OOM on 8GB GPUs
-    if device.type == "cuda" and chunk_seconds == 20.0 and overlap_seconds == 2.0:
-        chunk_seconds = 5.0
+    # Use smaller default chunks on CUDA/MPS to avoid OOM
+    if (device.type in ("cuda", "mps")) and chunk_seconds == 20.0 and overlap_seconds == 2.0:
+        chunk_seconds = 7.0
         overlap_seconds = 0.5
 
     if device.type == "cpu":

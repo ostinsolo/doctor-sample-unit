@@ -291,13 +291,14 @@ def worker_mode():
             {"cmd": "separate", "input": "/path/to/audio.wav", "output_dir": "/output/", "model": "17_HP-Wind_Inst-UVR.pth", ...}
             {"cmd": "apollo", "input": "/path/to/audio.wav", "output": "/path/to/restored.wav", "model_path": "/models/apollo.ckpt", ...}
             {"cmd": "load_model", "model": "17_HP-Wind_Inst-UVR.pth"}
+            {"cmd": "batch", "jobs": [{"cmd": "separate", ...}, {"cmd": "apollo", ...}]}
             {"cmd": "exit"}
         
         Output (one JSON per line):
             {"status": "ready"}
-            {"status": "progress", "percent": 45}
             {"status": "done", "files": [...], "elapsed": 12.5}
             {"status": "error", "message": "..."}
+            For batch: {"status": "done"|"error", "results": [...], "message": "..."}
     """
     
     # Install shutdown handlers
@@ -315,12 +316,33 @@ def worker_mode():
     
     try:
         # Import heavy modules
+        import torch
         from audio_separator.separator import Separator
+        
+        # Device for use_autocast and VR speed opts (CUDA/MPS benefit from both)
+        _device = "cuda" if torch.cuda.is_available() else (
+            "mps" if (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()) else "cpu"
+        )
+        _use_autocast = _device in ("cuda", "mps")
+        _vr_params = {
+            "batch_size": 1,
+            "window_size": 512,
+            "aggression": 5,
+            "enable_tta": False,
+            "enable_post_process": False,
+            "post_process_threshold": 0.2,
+            "high_end_process": False,
+        }
+        if _use_autocast:
+            # Faster VR on GPU/MPS: larger batches (no quality impact). Keep window_size=512 for quality.
+            _vr_params["batch_size"] = 8
         
         # Initialize separator (but don't load model yet)
         separator = Separator(
             log_level=30,  # WARNING level
-            output_format="WAV"
+            output_format="WAV",
+            use_autocast=_use_autocast,
+            vr_params=_vr_params,
         )
         
         send_json({"status": "ready", "message": "Worker ready"})
@@ -329,320 +351,239 @@ def worker_mode():
         send_json({"status": "error", "message": f"Failed to initialize: {str(e)}"})
         return 1
     
-    # Main job loop - checks shutdown flag
+    def _handle_one(job, emit):
+        """Run a single job (load_model, load_apollo, separate, apollo, get_status, set_storage_type). Use emit instead of send_json."""
+        nonlocal current_model, apollo_model_path, apollo_model, apollo_device
+        cmd = job.get("cmd", "")
+        if cmd == "load_model":
+            model_name = job.get("model")
+            model_dir = job.get("model_file_dir")
+            if not model_name:
+                emit({"status": "error", "message": "No model specified"})
+                return
+            try:
+                emit({"status": "loading_model", "model": model_name})
+                if model_dir:
+                    separator.model_file_dir = model_dir
+                separator.load_model(model_name)
+                current_model = model_name
+                emit({"status": "model_loaded", "model": model_name})
+            except Exception as e:
+                emit({"status": "error", "message": f"Failed to load model: {str(e)}"})
+            return
+        if cmd == "load_apollo":
+            model_path = job.get("model_path")
+            config_path = job.get("config_path")
+            feature_dim = job.get("feature_dim")
+            layer = job.get("layer")
+            if not model_path:
+                emit({"status": "error", "message": "No model_path specified"})
+                return
+            try:
+                emit({"status": "loading_model", "model": os.path.basename(model_path)})
+                import torch
+                from apollo.apollo_separator import get_device, get_model_config, load_checkpoint
+                from apollo.look2hear.models.apollo import Apollo
+                device = get_device()
+                if config_path and os.path.exists(config_path):
+                    try:
+                        from omegaconf import OmegaConf
+                        conf = OmegaConf.load(config_path)
+                        if 'model' in conf:
+                            if feature_dim is None:
+                                feature_dim = conf.model.get('feature_dim', 384)
+                            if layer is None:
+                                layer = conf.model.get('layer', 6)
+                    except ImportError:
+                        pass
+                if feature_dim is None or layer is None:
+                    model_name = os.path.basename(model_path)
+                    auto_config = get_model_config(model_name)
+                    if feature_dim is None:
+                        feature_dim = auto_config['feature_dim']
+                    if layer is None:
+                        layer = auto_config['layer']
+                if apollo_model is not None:
+                    del apollo_model
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                apollo_model = Apollo(sr=44100, win=20, feature_dim=feature_dim, layer=layer)
+                apollo_model = load_checkpoint(apollo_model, model_path, device)
+                apollo_model.to(device)
+                apollo_model.eval()
+                apollo_device = device
+                apollo_model_path = model_path
+                emit({"status": "model_loaded", "model": os.path.basename(model_path), "type": "apollo",
+                      "feature_dim": feature_dim, "layer": layer, "device": str(device)})
+            except Exception as e:
+                emit({"status": "error", "message": f"Failed to load Apollo model: {str(e)}"})
+            return
+        if cmd == "separate":
+            input_path = job.get("input")
+            output_dir = job.get("output_dir", os.getcwd())
+            model_name = job.get("model")
+            model_dir = job.get("model_file_dir")
+            vr_enable_tta = job.get("vr_enable_tta", False)
+            vr_high_end_process = job.get("vr_high_end_process", False)
+            vr_post_process = job.get("vr_post_process", False)
+            vr_aggression = job.get("vr_aggression")
+            single_stem = job.get("single_stem")
+            if not input_path:
+                emit({"status": "error", "message": "No input file specified"})
+                return
+            if not os.path.exists(input_path):
+                emit({"status": "error", "message": f"Input file not found: {input_path}"})
+                return
+            if model_name and model_name != current_model:
+                try:
+                    emit({"status": "loading_model", "model": model_name})
+                    if model_dir:
+                        separator.model_file_dir = model_dir
+                    separator.load_model(model_name)
+                    current_model = model_name
+                except Exception as e:
+                    emit({"status": "error", "message": f"Failed to load model: {str(e)}"})
+                    return
+            if current_model is None:
+                emit({"status": "error", "message": "No model loaded. Use load_model first."})
+                return
+            try:
+                emit({"status": "separating", "input": os.path.basename(input_path)})
+                start_time = time.time()
+                separator.output_dir = output_dir
+                if separator.model_instance:
+                    separator.model_instance.output_dir = output_dir
+                if separator.model_instance:
+                    if hasattr(separator.model_instance, 'enable_tta'):
+                        separator.model_instance.enable_tta = vr_enable_tta
+                    if hasattr(separator.model_instance, 'high_end_process'):
+                        separator.model_instance.high_end_process = vr_high_end_process
+                    if hasattr(separator.model_instance, 'post_process_threshold'):
+                        separator.model_instance.post_process_threshold = 0.2 if vr_post_process else 0.2
+                    if vr_aggression is not None and hasattr(separator.model_instance, 'aggression'):
+                        agg = float(int(vr_aggression)) / 100.0
+                        separator.model_instance.aggression = agg
+                        mp = separator.model_instance.model_params.param
+                        separator.model_instance.aggressiveness = {
+                            "value": agg,
+                            "split_bin": mp["band"][1]["crop_stop"],
+                            "aggr_correction": mp.get("aggr_correction"),
+                        }
+                if single_stem:
+                    output_files = separator.separate(input_path, primary_stem=single_stem)
+                else:
+                    output_files = separator.separate(input_path)
+                elapsed = time.time() - start_time
+                if not (output_files and len(output_files) > 0):
+                    emit({"status": "error", "message": "Separation produced no output files", "elapsed": round(elapsed, 2), "files": []})
+                else:
+                    emit({"status": "done", "elapsed": round(elapsed, 2), "files": output_files})
+            except Exception as e:
+                emit({"status": "error", "message": f"Separation failed: {str(e)}", "traceback": traceback.format_exc()})
+            return
+        if cmd == "apollo":
+            input_path = job.get("input")
+            output_path = job.get("output")
+            model_path = job.get("model_path")
+            config_path = job.get("config_path")
+            feature_dim = job.get("feature_dim")
+            layer = job.get("layer")
+            chunk_seconds = job.get("chunk_seconds", 7.0)
+            chunk_overlap = job.get("chunk_overlap", 0.5)
+            if not input_path:
+                emit({"status": "error", "message": "No input file specified"})
+                return
+            if not output_path:
+                base = os.path.splitext(os.path.basename(input_path))[0]
+                output_path = f"{base}_restored.wav"
+            if not model_path:
+                emit({"status": "error", "message": "No model_path specified for Apollo"})
+                return
+            if not os.path.exists(input_path):
+                emit({"status": "error", "message": f"Input file not found: {input_path}"})
+                return
+            if not os.path.exists(model_path):
+                emit({"status": "error", "message": f"Model not found: {model_path}"})
+                return
+            try:
+                emit({"status": "restoring", "input": os.path.basename(input_path)})
+                start_time = time.time()
+                use_cached = (apollo_model is not None and apollo_model_path == model_path)
+                if use_cached:
+                    import torch
+                    from apollo.apollo_separator import load_audio, save_audio, _chunk_restore
+                    audio = load_audio(input_path)
+                    audio = audio.to(apollo_device)
+                    total_samples = audio.shape[-1]
+                    sr = 44100
+                    duration_seconds = total_samples / sr
+                    if chunk_seconds > 0 and duration_seconds > chunk_seconds:
+                        restored = _chunk_restore(apollo_model, audio, sr, chunk_seconds, chunk_overlap, apollo_device)
+                    else:
+                        with torch.inference_mode():
+                            restored = apollo_model(audio)
+                    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+                    save_audio(output_path, restored)
+                else:
+                    from apollo.apollo_separator import restore_audio
+                    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+                    restore_audio(
+                        input_path=input_path,
+                        output_path=output_path,
+                        model_path=model_path,
+                        config_path=config_path,
+                        feature_dim=feature_dim,
+                        layer=layer,
+                        chunk_seconds=chunk_seconds,
+                        overlap_seconds=chunk_overlap
+                    )
+                    apollo_model_path = model_path
+                elapsed = time.time() - start_time
+                emit({"status": "done", "elapsed": round(elapsed, 2), "files": [output_path], "cached": use_cached})
+            except Exception as e:
+                emit({"status": "error", "message": f"Apollo restoration failed: {str(e)}", "traceback": traceback.format_exc()})
+            return
+        if cmd == "get_status":
+            emit({"status": "status", "separator_model": current_model, "apollo_model": apollo_model_path, "ready": True})
+            return
+        if cmd == "set_storage_type":
+            storage_type = job.get("type", "ssd").lower()
+            use_mmap = storage_type == "ssd"
+            set_mmap_preferred(use_mmap)
+            emit({"status": "storage_configured", "type": storage_type, "mmap_enabled": use_mmap, "mmap_supported": check_mmap_support()})
+            return
+        emit({"status": "error", "message": f"Unknown command: {cmd}"})
+
+    # Main job loop
     while not _shutdown_requested.is_set():
         try:
             line = sys.stdin.readline()
             if not line:
-                # EOF - stdin closed (parent died)
                 break
-            
             line = line.strip()
             if not line:
                 continue
-            
             job = json.loads(line)
             cmd = job.get("cmd", "")
-            
             if cmd == "exit":
                 send_json({"status": "exiting"})
                 break
-            
-            elif cmd == "ping":
-                send_json({
-                    "status": "pong",
-                    "separator_model": current_model,
-                    "apollo_model": apollo_model_path
-                })
-            
-            elif cmd == "load_model":
-                model_name = job.get("model")
-                model_dir = job.get("model_file_dir")
-                
-                if not model_name:
-                    send_json({"status": "error", "message": "No model specified"})
-                    continue
-                
-                try:
-                    send_json({"status": "loading_model", "model": model_name})
-                    
-                    if model_dir:
-                        separator.model_file_dir = model_dir
-                    
-                    separator.load_model(model_name)
-                    current_model = model_name
-                    
-                    send_json({"status": "model_loaded", "model": model_name})
-                    
-                except Exception as e:
-                    send_json({"status": "error", "message": f"Failed to load model: {str(e)}"})
-            
-            elif cmd == "load_apollo":
-                # Preload Apollo model for restoration
-                model_path = job.get("model_path")
-                config_path = job.get("config_path")
-                feature_dim = job.get("feature_dim")
-                layer = job.get("layer")
-                
-                if not model_path:
-                    send_json({"status": "error", "message": "No model_path specified"})
-                    continue
-                
-                try:
-                    send_json({"status": "loading_model", "model": os.path.basename(model_path)})
-                    
-                    import torch
-                    from apollo.apollo_separator import get_device, get_model_config, load_checkpoint
-                    from apollo.look2hear.models.apollo import Apollo
-                    
-                    # Get device
-                    device = get_device()
-                    
-                    # Get config from YAML if provided
-                    if config_path and os.path.exists(config_path):
-                        try:
-                            from omegaconf import OmegaConf
-                            conf = OmegaConf.load(config_path)
-                            if 'model' in conf:
-                                if feature_dim is None:
-                                    feature_dim = conf.model.get('feature_dim', 384)
-                                if layer is None:
-                                    layer = conf.model.get('layer', 6)
-                        except ImportError:
-                            pass
-                    
-                    # Auto-detect from model name if not specified
-                    if feature_dim is None or layer is None:
-                        model_name = os.path.basename(model_path)
-                        auto_config = get_model_config(model_name)
-                        if feature_dim is None:
-                            feature_dim = auto_config['feature_dim']
-                        if layer is None:
-                            layer = auto_config['layer']
-                    
-                    # Unload previous Apollo model
-                    if apollo_model is not None:
-                        del apollo_model
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                    
-                    # Create and load Apollo model
-                    apollo_model = Apollo(sr=44100, win=20, feature_dim=feature_dim, layer=layer)
-                    apollo_model = load_checkpoint(apollo_model, model_path, device)
-                    apollo_model.to(device)
-                    apollo_model.eval()
-                    apollo_device = device
-                    apollo_model_path = model_path
-                    
-                    send_json({
-                        "status": "model_loaded",
-                        "model": os.path.basename(model_path),
-                        "type": "apollo",
-                        "feature_dim": feature_dim,
-                        "layer": layer,
-                        "device": str(device)
-                    })
-                    
-                except Exception as e:
-                    send_json({"status": "error", "message": f"Failed to load Apollo model: {str(e)}"})
-            
-            elif cmd == "separate":
-                input_path = job.get("input")
-                output_dir = job.get("output_dir", os.getcwd())
-                model_name = job.get("model")
-                model_dir = job.get("model_file_dir")
-                
-                # VR-specific settings
-                vr_enable_tta = job.get("vr_enable_tta", False)
-                vr_high_end_process = job.get("vr_high_end_process", False)
-                vr_post_process = job.get("vr_post_process", False)
-                single_stem = job.get("single_stem")
-                
-                if not input_path:
-                    send_json({"status": "error", "message": "No input file specified"})
-                    continue
-                
-                if not os.path.exists(input_path):
-                    send_json({"status": "error", "message": f"Input file not found: {input_path}"})
-                    continue
-                
-                # Load model if different or not loaded
-                if model_name and model_name != current_model:
-                    try:
-                        send_json({"status": "loading_model", "model": model_name})
-                        if model_dir:
-                            separator.model_file_dir = model_dir
-                        separator.load_model(model_name)
-                        current_model = model_name
-                    except Exception as e:
-                        send_json({"status": "error", "message": f"Failed to load model: {str(e)}"})
-                        continue
-                
-                if current_model is None:
-                    send_json({"status": "error", "message": "No model loaded. Use load_model first."})
-                    continue
-                
-                try:
-                    send_json({"status": "separating", "input": os.path.basename(input_path)})
-                    start_time = time.time()
-                    
-                    # Update output dir
-                    separator.output_dir = output_dir
-                    if separator.model_instance:
-                        separator.model_instance.output_dir = output_dir
-                    
-                    # Apply VR-specific settings to model instance
-                    if separator.model_instance:
-                        if hasattr(separator.model_instance, 'enable_tta'):
-                            separator.model_instance.enable_tta = vr_enable_tta
-                        if hasattr(separator.model_instance, 'high_end_process'):
-                            separator.model_instance.high_end_process = vr_high_end_process
-                        if hasattr(separator.model_instance, 'post_process_threshold'):
-                            separator.model_instance.post_process_threshold = 0.2 if vr_post_process else None
-                    
-                    # Run separation (with optional single stem)
-                    if single_stem:
-                        output_files = separator.separate(input_path, primary_stem=single_stem)
-                    else:
-                        output_files = separator.separate(input_path)
-                    elapsed = time.time() - start_time
-                    
-                    send_json({
-                        "status": "done",
-                        "elapsed": round(elapsed, 2),
-                        "files": output_files
-                    })
-                    
-                except Exception as e:
-                    send_json({
-                        "status": "error",
-                        "message": f"Separation failed: {str(e)}",
-                        "traceback": traceback.format_exc()
-                    })
-            
-            elif cmd == "apollo":
-                # Apollo restoration
-                input_path = job.get("input")
-                output_path = job.get("output")
-                model_path = job.get("model_path")
-                config_path = job.get("config_path")
-                feature_dim = job.get("feature_dim")
-                layer = job.get("layer")
-                chunk_seconds = job.get("chunk_seconds", 7.0)  # 7s chunks = good balance of speed and VRAM
-                chunk_overlap = job.get("chunk_overlap", 0.5)  # 0.5s overlap for smooth transitions
-                
-                if not input_path:
-                    send_json({"status": "error", "message": "No input file specified"})
-                    continue
-                
-                if not output_path:
-                    base = os.path.splitext(os.path.basename(input_path))[0]
-                    output_path = f"{base}_restored.wav"
-                
-                if not model_path:
-                    send_json({"status": "error", "message": "No model_path specified for Apollo"})
-                    continue
-                
-                if not os.path.exists(input_path):
-                    send_json({"status": "error", "message": f"Input file not found: {input_path}"})
-                    continue
-                
-                if not os.path.exists(model_path):
-                    send_json({"status": "error", "message": f"Model not found: {model_path}"})
-                    continue
-                
-                try:
-                    send_json({"status": "restoring", "input": os.path.basename(input_path)})
-                    start_time = time.time()
-                    
-                    # Check if we can use cached Apollo model
-                    use_cached = (apollo_model is not None and 
-                                  apollo_model_path == model_path)
-                    
-                    if use_cached:
-                        # Use cached model - much faster!
-                        import torch
-                        from apollo.apollo_separator import load_audio, save_audio, _chunk_restore
-                        
-                        # Load input audio
-                        audio = load_audio(input_path)
-                        audio = audio.to(apollo_device)
-                        
-                        # Process with chunking
-                        total_samples = audio.shape[-1]
-                        sr = 44100
-                        duration_seconds = total_samples / sr
-                        
-                        if chunk_seconds > 0 and duration_seconds > chunk_seconds:
-                            restored = _chunk_restore(apollo_model, audio, sr, chunk_seconds, chunk_overlap, apollo_device)
-                        else:
-                            with torch.inference_mode():
-                                restored = apollo_model(audio)
-                        
-                        # Ensure output directory exists
-                        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-                        
-                        # Save output
-                        save_audio(output_path, restored)
-                    else:
-                        # Load fresh (first time or different model)
-                        from apollo.apollo_separator import restore_audio
-                        
-                        # Ensure output directory exists
-                        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-                        
-                        restore_audio(
-                            input_path=input_path,
-                            output_path=output_path,
-                            model_path=model_path,
-                            config_path=config_path,
-                            feature_dim=feature_dim,
-                            layer=layer,
-                            chunk_seconds=chunk_seconds,
-                            overlap_seconds=chunk_overlap
-                        )
-                        apollo_model_path = model_path
-                    
-                    elapsed = time.time() - start_time
-                    
-                    send_json({
-                        "status": "done",
-                        "elapsed": round(elapsed, 2),
-                        "files": [output_path],
-                        "cached": use_cached
-                    })
-                    
-                except Exception as e:
-                    send_json({
-                        "status": "error",
-                        "message": f"Apollo restoration failed: {str(e)}",
-                        "traceback": traceback.format_exc()
-                    })
-            
-            elif cmd == "get_status":
-                send_json({
-                    "status": "status",
-                    "separator_model": current_model,
-                    "apollo_model": apollo_model_path,
-                    "ready": True
-                })
-            
-            elif cmd == "set_storage_type":
-                # Configure mmap preference based on storage type
-                # SSD: use mmap (faster initial load, reads from disk on-demand)
-                # HDD: disable mmap (loading entire model is faster than random seeks)
-                storage_type = job.get("type", "ssd").lower()
-                use_mmap = storage_type == "ssd"
-                set_mmap_preferred(use_mmap)
-                send_json({
-                    "status": "storage_configured",
-                    "type": storage_type,
-                    "mmap_enabled": use_mmap,
-                    "mmap_supported": check_mmap_support()
-                })
-            
-            else:
-                send_json({"status": "error", "message": f"Unknown command: {cmd}"})
+            if cmd == "ping":
+                send_json({"status": "pong", "separator_model": current_model, "apollo_model": apollo_model_path})
+                continue
+            if cmd == "batch":
+                jobs = job.get("jobs", [])
+                results = []
+                for sub in jobs:
+                    cur = []
+                    _handle_one(sub, cur.append)
+                    results.append(cur[-1] if cur else {"status": "error", "message": "no response"})
+                    if results[-1].get("status") == "error":
+                        break
+                err = results and results[-1].get("status") == "error"
+                send_json({"status": "error" if err else "done", "results": results, "message": results[-1].get("message") if err and results else None})
+                continue
+            _handle_one(job, send_json)
         
         except json.JSONDecodeError as e:
             send_json({"status": "error", "message": f"Invalid JSON: {str(e)}"})

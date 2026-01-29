@@ -14,6 +14,10 @@
 
 set -e  # Exit on error
 
+# -y / --yes: non-interactive (skip confirmations, rebuild runtime if exists)
+NONINTERACTIVE=
+[[ "$1" = "-y" || "$1" = "--yes" ]] && NONINTERACTIVE=1
+
 echo "============================================================================="
 echo "Doctor Sample Unit (DSU) - Shared Runtime Builder"
 echo "============================================================================="
@@ -33,10 +37,14 @@ if [ "$ARCH" != "arm64" ]; then
     echo "This script is optimized for Apple Silicon (M1/M2/M3/M4)."
     echo "Use build_runtime_mac_intel.sh for Intel Macs."
     echo ""
-    read -p "Continue anyway? (y/N): " CONFIRM
-    if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
-        echo "Aborted."
-        exit 1
+    if [ -n "$NONINTERACTIVE" ]; then
+        echo "(-y): Continuing anyway."
+    else
+        read -p "Continue anyway? (y/N): " CONFIRM
+        if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
+            echo "Aborted."
+            exit 1
+        fi
     fi
 fi
 
@@ -67,13 +75,18 @@ if [ -d "$RUNTIME_DIR" ]; then
     echo "WARNING: runtime directory already exists!"
     echo "Location: $RUNTIME_DIR"
     echo ""
-    read -p "Delete and rebuild? (y/N): " CONFIRM
-    if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
-        echo "Aborted."
-        exit 1
+    if [ -n "$NONINTERACTIVE" ]; then
+        echo "(-y): Deleting and rebuilding."
+        rm -rf "$RUNTIME_DIR"
+    else
+        read -p "Delete and rebuild? (y/N): " CONFIRM
+        if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
+            echo "Aborted."
+            exit 1
+        fi
+        echo "Removing previous runtime..."
+        rm -rf "$RUNTIME_DIR"
     fi
-    echo "Removing previous runtime..."
-    rm -rf "$RUNTIME_DIR"
 fi
 
 # Create virtual environment
@@ -98,6 +111,8 @@ echo "This will take 5-10 minutes..."
 echo ""
 
 pip install -r "$SCRIPT_DIR/requirements-mac-mps.txt"
+# Mac ARM: samplerate 0.1.0 ships x86_64-only libsamplerate.dylib; use 0.2.3+ (universal2)
+pip install 'samplerate>=0.2.3' --force-reinstall
 
 # Verify installation
 echo ""
@@ -111,7 +126,8 @@ python -c "import numpy; print(f'NumPy: {numpy.__version__}')"
 python -c "import librosa; print(f'Librosa: {librosa.__version__}')"
 python -c "import soundfile; print(f'SoundFile: {soundfile.__version__}')"
 python -c "import demucs; print(f'Demucs: {demucs.__version__}')"
-python -c "import audio_separator; print(f'Audio-Separator: {audio_separator.__version__}')"
+python -c "import audio_separator; v=getattr(audio_separator,'__version__','(no version)'); print(f'Audio-Separator: {v}')"
+python -c "import samplerate; print(f'samplerate: {samplerate.__version__}')"
 
 # Test MPS
 echo ""

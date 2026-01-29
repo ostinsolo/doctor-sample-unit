@@ -8,13 +8,12 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# PyTorch for Apple Silicon with MPS
-# Use latest version for best MPS support and memory management
-# PyTorch 2.5+ has critical MPS fixes for buffer size errors
+# PyTorch 2.10 for Apple Silicon with MPS (Metal)
+# MPS supported in 2.10; 2.5+ had critical buffer-size fixes. We use 2.10.
 # -----------------------------------------------------------------------------
-torch>=2.5.0
-torchaudio>=2.5.0
-torchvision>=0.20.0
+torch>=2.10,<2.11
+torchaudio>=2.10,<2.11
+torchvision>=0.25,<0.26
 
 # -----------------------------------------------------------------------------
 # NumPy - Use numpy>=2 (tested compatible with all architectures)
@@ -27,6 +26,10 @@ numpy>=2.0.0
 audio-separator==0.41.0
 librosa>=0.10.0
 soundfile>=0.12.0
+# samplerate: audio-separator pins 0.1.0, but 0.1.0 ships x86_64-only libsamplerate.dylib.
+# On Mac ARM run after install: pip install 'samplerate>=0.2.3' --force-reinstall
+# Build scripts (build_manual_mac.sh, build_runtime_mac_mps.sh, simulate_ci_mac_arm.sh) do this automatically.
+# See docs/LIBSAMPLERATE_MAC_ARM.md
 samplerate==0.1.0
 pydub>=0.25.0
 scipy>=1.10.0

@@ -297,23 +297,27 @@ def build_dsu():
         
         # CRITICAL: Replace paths to make bundle portable
         "replace_paths": [("*", "")],  # Remove all absolute paths
-        
-        # Include MSVC runtime
-        "include_msvcr": True,
     }
+    if sys.platform == "win32":
+        build_exe_options["include_msvcr"] = True
+    
+    # Platform: .exe on Windows, no extension on macOS/Linux
+    exe_suffix = ".exe" if sys.platform == "win32" else ""
+    base = "Console" if sys.platform == "win32" else None
     
     # Create executables
     executables = []
     for worker in workers:
         if os.path.exists(worker['script']):
+            target = f"{worker['exe_name']}{exe_suffix}"
             exe = Executable(
                 script=worker['script'],
-                target_name=f"{worker['exe_name']}.exe",
-                base="Console",  # Console application
+                target_name=target,
+                base=base,
                 copyright=APP_COPYRIGHT,
             )
             executables.append(exe)
-            print(f"  Adding: {os.path.basename(worker['script'])} -> {worker['exe_name']}.exe")
+            print(f"  Adding: {os.path.basename(worker['script'])} -> {target}")
         else:
             print(f"  WARNING: {worker['script']} not found!")
     
@@ -348,11 +352,12 @@ def build_dsu():
         sys.argv = orig_argv
     
     # =============================================================================
-    # Post-build: Copy llvmlite.libs (required for Windows)
+    # Post-build: Copy llvmlite.libs (Windows only)
     # =============================================================================
-    print()
-    print("Post-build: Copying llvmlite.libs...")
-    copy_llvmlite_libs(output_dir)
+    if sys.platform == "win32":
+        print()
+        print("Post-build: Copying llvmlite.libs...")
+        copy_llvmlite_libs(output_dir)
     
     # Report results
     print()
@@ -363,13 +368,14 @@ def build_dsu():
     # Check executables
     exe_total = 0
     for worker in workers:
-        exe_path = os.path.join(output_dir, f"{worker['exe_name']}.exe")
+        target = f"{worker['exe_name']}{exe_suffix}"
+        exe_path = os.path.join(output_dir, target)
         if os.path.exists(exe_path):
             size_kb = os.path.getsize(exe_path) / 1024
-            print(f"  {worker['exe_name']}.exe: {size_kb:.0f} KB")
+            print(f"  {target}: {size_kb:.0f} KB")
             exe_total += 1
         else:
-            print(f"  {worker['exe_name']}.exe: NOT FOUND")
+            print(f"  {target}: NOT FOUND")
     
     # Check lib folder
     lib_dir = os.path.join(output_dir, 'lib')
@@ -400,13 +406,16 @@ def build_dsu():
         f.write(f"{APP_NAME} v{APP_VERSION}\n")
         f.write(f"\nExecutables:\n")
         for worker in workers:
-            f.write(f"  - {worker['exe_name']}.exe\n")
+            f.write(f"  - {worker['exe_name']}{exe_suffix}\n")
         f.write(f"\nAll executables share lib/ folder (no duplication)\n")
     
     print()
     print("Next: Test with:")
-    print(f"  {output_dir}\\dsu-demucs.exe --help")
-    print(f"  {output_dir}\\dsu-bsroformer.exe --worker")
+    d1 = f"{workers[0]['exe_name']}{exe_suffix}"
+    d2 = f"{workers[1]['exe_name']}{exe_suffix}"
+    sep = "\\" if sys.platform == "win32" else "/"
+    print(f"  {output_dir}{sep}{d1} --help")
+    print(f"  {output_dir}{sep}{d2} --worker")
     
     return 0 if exe_total == len(workers) else 1
 

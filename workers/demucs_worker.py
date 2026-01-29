@@ -139,15 +139,70 @@ def save_audio_soundfile(wav, path, sample_rate):
         sample_rate: Sample rate in Hz
     """
     import soundfile as sf
-    
+
     # Move to CPU and convert to numpy
     data = wav.detach().cpu().numpy()
-    
+
     # soundfile expects (samples, channels), we have (channels, samples)
     if data.ndim == 2:
         data = data.T  # (C, T) -> (T, C)
-    
+
     sf.write(path, data, sample_rate)
+
+
+def _patch_demucs_save_audio_to_use_soundfile():
+    """
+    Replace demucs.audio.save_audio with a soundfile-based implementation.
+    Avoids torchaudio.save -> torchcodec on Windows/Mac when using CLI (e.g.
+    dsu-demucs -n htdemucs file.wav -o out). Worker mode already uses
+    save_audio_soundfile; this patch fixes the CLI path.
+    """
+    import demucs.audio as _da
+    from pathlib import Path
+    import soundfile as sf
+
+    _prevent_clip = _da.prevent_clip
+    _encode_mp3 = _da.encode_mp3
+
+    def _save_audio(
+        wav,
+        path,
+        samplerate,
+        bitrate=320,
+        clip="rescale",
+        bits_per_sample=16,
+        as_float=False,
+        preset=2,
+    ):
+        wav = _prevent_clip(wav, mode=clip)
+        path = Path(path)
+        suffix = path.suffix.lower()
+        if suffix == ".mp3":
+            _encode_mp3(wav, path, samplerate, bitrate, preset, verbose=True)
+            return
+        if suffix == ".wav":
+            if as_float:
+                subtype = "FLOAT"
+            else:
+                subtype = {16: "PCM_16", 24: "PCM_24", 32: "PCM_32"}.get(
+                    bits_per_sample, "PCM_16"
+                )
+        elif suffix == ".flac":
+            subtype = {16: "PCM_16", 24: "PCM_24", 32: "PCM_32"}.get(
+                bits_per_sample, "PCM_16"
+            )
+        else:
+            raise ValueError(f"Invalid suffix for path: {suffix}")
+
+        data = wav.detach().cpu().numpy()
+        if data.ndim == 2:
+            data = data.T
+        sf.write(str(path), data, samplerate, subtype=subtype)
+
+    _da.save_audio = _save_audio
+    # demucs.separate does "from .audio import save_audio" and uses that ref
+    import demucs.separate as _ds
+    _ds.save_audio = _save_audio
 
 def _patched_getsourcelines(obj):
     try:
@@ -337,6 +392,9 @@ def worker_mode():
             {"cmd": "load_model", "model": "htdemucs_ft"}
             {"cmd": "list_models"}
             {"cmd": "exit"}
+
+        Custom models (inaki, filosax) require "repo": "/path/to/demucs/models" (folder with
+        .th/.yaml). Same idea as Demucs CLI --repo. Use with model "inaki" or "filosax".
         
         Output (one JSON per line):
             {"status": "ready"}
@@ -805,6 +863,8 @@ def main():
     else:
         # Configure torch cache for demucs checkpoints
         _configure_demucs_cache()
+        # Use soundfile for saving (avoids torchaudio.save -> torchcodec on Win/Mac)
+        _patch_demucs_save_audio_to_use_soundfile()
         # Standard Demucs CLI
         from demucs.separate import main as demucs_main
         demucs_main()

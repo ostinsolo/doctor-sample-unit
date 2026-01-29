@@ -15,11 +15,11 @@ A properly frozen shared runtime for professional audio source separation. Three
 
 ```
 dsu/
-├── dsu-demucs.exe           # Demucs worker (~15KB entry point)
-├── dsu-bsroformer.exe       # BS-RoFormer worker (~15KB entry point)
-├── dsu-audio-separator.exe  # Audio Separator + Apollo (~15KB entry point)
+├── dsu-demucs[.exe]         # Demucs worker (~15KB entry point)
+├── dsu-bsroformer[.exe]     # BS-RoFormer worker (~15KB entry point)
+├── dsu-audio-separator[.exe]# Audio Separator + Apollo (~15KB entry point)
 ├── lib/                     # Shared frozen dependencies (~2GB)
-│   ├── torch/              # PyTorch 2.10.0 + CUDA 12.6
+│   ├── torch/              # PyTorch 2.10.x (CUDA 12.6 on Win, MPS on Mac ARM)
 │   ├── numpy/
 │   ├── librosa/
 │   └── ...
@@ -28,7 +28,8 @@ dsu/
 └── VERSION.txt
 ```
 
-All three executables share the same `lib/` folder - **~4GB disk space saved** compared to bundling each separately!
+- **Windows**: `dsu-*.exe`. **macOS/Linux**: no extension (e.g. `dsu-demucs`).
+- All three executables share the same `lib/` folder - **~4GB disk space saved** compared to bundling each separately!
 
 ## Supported Architectures
 
@@ -45,16 +46,22 @@ The key advantage: **workers stay running, torch loads once, models stay cached 
 
 ## Benchmarking / Timing (reproducible)
 
-To measure **shared runtime load**, **model load**, and **separation time** end-to-end (exactly like Node worker usage), run:
+**Models dir**: `~/Documents/DSU/ThirdPartyApps/Models` (or `DSU_MODELS`). Contains `bsroformer/`, `audio-separator/`, `apollo/`, `demucs/`.
+
+**Test audio**: `tests/audio/`. Create with `python tests/generate_test_audio.py` (adds `test_4s.wav`, `test_40s.wav`, etc.).
+
+**Mac (MPS)**: `./tests/run_benchmarks_mac.sh` runs Demucs, BS-RoFormer, Audio-Separator, Apollo. Use `./tests/run_benchmarks_mac.sh 40` for 40s input. See `tests/README.md` (index), `tests/README_BENCHMARKS.md`, `tests/README_NODE_TESTS.md` (Max/MSP).
+
+**Windows (CUDA)** – example:
 
 ```batch
 runtime\Scripts\python.exe tests\benchmark_worker_e2e.py ^
   --exe dist\dsu\dsu-bsroformer.exe ^
   --worker bsroformer ^
-  --models-dir "C:\Users\soloo\Documents\DSU-VSTOPIA\ThirdPartyApps\Models\bsroformer" ^
+  --models-dir "%USERPROFILE%\Documents\DSU\ThirdPartyApps\Models\bsroformer" ^
   --model bsrofo_sw ^
-  --input "C:\Users\soloo\Documents\0_20_56_1_27_2026_.wav" ^
-  --output-dir "C:\Users\soloo\Desktop\shared_runtime\output_bench" ^
+  --input "tests\audio\test_4s.wav" ^
+  --output-dir "tests\benchmark_output\bsroformer" ^
   --device cuda ^
   --timeout 1200
 ```
@@ -66,15 +73,22 @@ This prints a JSON summary:
 - **`t_separate_*_wall_s`**: `separate` command → `done` (wall-clock)
 - **`done.elapsed`**: worker-reported separation time (inside the model pipeline)
 
-### Example numbers (RTX 3070 Laptop, Torch 2.10.0+cu126, SageAttention enabled)
+### Example numbers (Windows – RTX 3070 Laptop, Torch 2.10.0+cu126, SageAttention)
 
-From `dist\dsu\dsu-bsroformer.exe` using model `bsrofo_sw` on `0_20_56_1_27_2026_.wav`:
+From `dist\dsu\dsu-bsroformer.exe` using model `bsrofo_sw`:
 
 - **Shared runtime / process bootstrap**: ~0.07s to first JSON
 - **Worker ready (imports/init)**: ~2.18s
 - **Model load**: ~4.75s
 - **Separation (cold)**: ~18.94s
 - **Separation (warm, cached)**: ~0.91s
+
+### Example numbers (Mac ARM – PyTorch 2.10, MPS, 4s test)
+
+From `dist/dsu/dsu-demucs` (htdemucs) and `dsu-bsroformer` (bsrofo_sw), `tests/run_benchmarks_mac.sh`:
+
+- **Demucs**: ready ~0.64s, model load ~0.19s, separate cold ~0.9s, warm ~0.43s
+- **BS-RoFormer**: ready ~0.73s, model load ~18.5s, separate cold ~10.2s, warm ~4.3s
 
 ### First Batch (cold start, model loading)
 | Worker | Processing | Total |
@@ -319,7 +333,25 @@ python build_dsu.py
 REM Output in dist/dsu/
 ```
 
-### Manual Build Script
+### macOS Apple Silicon (MPS)
+
+```bash
+# Setup runtime + deps (PyTorch 2.10, MPS)
+./setup_local_mac.sh -y
+
+# Optional: freeze executables
+./build_manual_mac.sh
+# Output: dist/dsu/dsu-demucs, dsu-bsroformer, dsu-audio-separator (no .exe)
+
+# Benchmarks (4s / 40s test audio)
+./tests/run_benchmarks_mac.sh
+./tests/run_benchmarks_mac.sh 40
+```
+
+See `build_runtime_mac_mps.sh`, `build_manual_mac.sh`, and `tests/README.md`.  
+**Mac ARM + VR separation**: If you see `libsamplerate.dylib` "incompatible architecture (have 'x86_64', need 'arm64')", run `pip install 'samplerate>=0.2.3' --force-reinstall` after installing deps. See **`docs/LIBSAMPLERATE_MAC_ARM.md`**.
+
+### Manual Build Script (Windows)
 
 ```batch
 REM build_manual.bat
@@ -369,9 +401,11 @@ build_options = {
 
 | Platform | Status | PyTorch | GPU |
 |----------|--------|---------|-----|
-| Windows CUDA | ✅ Ready | 2.10.0+cu126 | NVIDIA CUDA 12.6 |
-| Windows CPU | ✅ Ready | 2.10.0+cpu | None |
-| macOS ARM | ✅ Ready | 2.5.0+ | MPS (Metal) |
+| Windows CUDA | ✅ Ready | 2.10.x+cu126 | NVIDIA CUDA 12.6 |
+| Windows CPU | ✅ Ready | 2.10.x+cpu | None |
+| macOS ARM (M1/M2/M3) | ✅ Ready | **2.10.x** | MPS (Metal) |
+
+Mac ARM uses **PyTorch 2.10** (not 2.5). See `requirements-mac-mps.txt`. Validated with `runtime` + frozen `dist/dsu/` builds.
 
 ## Troubleshooting
 
@@ -383,6 +417,13 @@ This is fixed in the worker scripts. If you see this, ensure the inspect monkey-
 nvidia-smi
 ```
 Requires NVIDIA driver supporting CUDA 12.6.
+
+### Mac ARM: libsamplerate "incompatible architecture (x86_64 / arm64)"
+VR separation uses the **samplerate** package; **0.1.0** ships an x86_64-only `.dylib`, so it fails on Apple Silicon. After `pip install -r requirements-mac-mps.txt`, run:
+```bash
+pip install 'samplerate>=0.2.3' --force-reinstall
+```
+Then rebuild. Full explanation: **`docs/LIBSAMPLERATE_MAC_ARM.md`**.
 
 ### Worker hangs / no output
 When using subprocess, combine stderr with stdout:
