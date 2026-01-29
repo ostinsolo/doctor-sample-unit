@@ -1338,7 +1338,7 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
     
     # Model cache for keeping multiple models in GPU memory
     # This enables fast switching between models (e.g., bsroformer_4stem + drumsep)
-    MAX_CACHED_MODELS = 3  # Limit to prevent OOM
+    MAX_CACHED_MODELS = 2  # Limit to prevent OOM (reduced from 3 for better performance)
     model_cache = {}  # {model_identifier: (model, config, model_info)}
     
     def get_cached_model(identifier):
@@ -1351,8 +1351,7 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
         if len(model_cache) >= MAX_CACHED_MODELS:
             # Evict oldest (first inserted)
             oldest_key = next(iter(model_cache))
-            old_model = model_cache.pop(oldest_key)[0]
-            del old_model
+            model_cache.pop(oldest_key)  # Remove from cache, GC handles cleanup
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             send_json({"status": "cache_evicted", "model": os.path.basename(oldest_key)})
@@ -1361,8 +1360,7 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
     def clear_cache():
         """Clear all cached models"""
         nonlocal model_cache
-        for key in list(model_cache.keys()):
-            del model_cache[key][0]
+        # Simply clear the dict - Python GC will handle model cleanup
         model_cache.clear()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

@@ -390,7 +390,7 @@ def worker_mode():
     
     # Model cache for keeping multiple models in GPU memory
     # This enables fast switching between models (e.g., htdemucs_ft + inaki)
-    MAX_CACHED_MODELS = 3  # Limit to prevent OOM
+    MAX_CACHED_MODELS = 2  # Limit to prevent OOM (reduced from 3 for better performance)
     model_cache = {}  # {model_identifier: (model, repo_path, stems)}
     
     def get_cache_key(model_name, repo_path=None):
@@ -409,8 +409,7 @@ def worker_mode():
         if len(model_cache) >= MAX_CACHED_MODELS:
             # Evict oldest (first inserted)
             oldest_key = next(iter(model_cache))
-            old_model = model_cache.pop(oldest_key)[0]
-            del old_model
+            model_cache.pop(oldest_key)  # Remove from cache, GC handles cleanup
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             send_json({"status": "cache_evicted", "model": oldest_key.split('|')[0]})
@@ -419,8 +418,7 @@ def worker_mode():
     def clear_cache():
         """Clear all cached models"""
         nonlocal model_cache
-        for key in list(model_cache.keys()):
-            del model_cache[key][0]
+        # Simply clear the dict - Python GC will handle model cleanup
         model_cache.clear()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
