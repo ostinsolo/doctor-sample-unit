@@ -292,7 +292,8 @@ class SCNet(nn.Module):
             'center': True,
             'normalized': normalized
         }
-        self.register_buffer("stft_window", torch.hann_window(win_size), persistent=False)
+        # Rectangular window (all ones) — matches original BS-RoFormer-freeze / PyTorch default
+        self.register_buffer("stft_window", torch.ones(win_size), persistent=False)
 
         self.encoder = nn.ModuleList()
         self.decoder = nn.ModuleList()

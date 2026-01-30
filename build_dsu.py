@@ -157,18 +157,21 @@ PROJECT_PACKAGES = [
 ALL_PACKAGES = TORCH_PACKAGES + AUDIO_PACKAGES + STDLIB_PACKAGES + PROJECT_PACKAGES
 
 # =============================================================================
-# CUDA-only packages (only available on Windows/Linux with NVIDIA GPU)
-# These are optional and will be skipped if not installed
+# Optional packages (skipped if not installed)
+# - CUDA: sageattention, triton (Windows/Linux NVIDIA)
+# - torchcodec: torchaudio save/load (Demucs). If missing, Demucs worker uses
+#   soundfile fallback.
 # =============================================================================
-CUDA_OPTIONAL_PACKAGES = ["sageattention", "triton"]
+OPTIONAL_PACKAGES = ["sageattention", "triton", "torchcodec"]
 
-for pkg in CUDA_OPTIONAL_PACKAGES:
+for pkg in OPTIONAL_PACKAGES:
     try:
         __import__(pkg)
         ALL_PACKAGES.append(pkg)
-        print(f"  Including optional CUDA package: {pkg}")
+        kind = "CUDA" if pkg in ("sageattention", "triton") else "torchcodec"
+        print(f"  Including optional package ({kind}): {pkg}")
     except ImportError:
-        print(f"  Skipping optional CUDA package (not installed): {pkg}")
+        print(f"  Skipping optional package (not installed): {pkg}")
 
 # =============================================================================
 # Modules to exclude (reduce size, not needed at runtime)

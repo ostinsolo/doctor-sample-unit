@@ -126,6 +126,7 @@ python -c "import numpy; print(f'NumPy: {numpy.__version__}')"
 python -c "import librosa; print(f'Librosa: {librosa.__version__}')"
 python -c "import soundfile; print(f'SoundFile: {soundfile.__version__}')"
 python -c "import demucs; print(f'Demucs: {demucs.__version__}')"
+python -c "import torchcodec; print('TorchCodec: OK (torchaudio save/load)')"
 python -c "import audio_separator; v=getattr(audio_separator,'__version__','(no version)'); print(f'Audio-Separator: {v}')"
 python -c "import samplerate; print(f'samplerate: {samplerate.__version__}')"
 

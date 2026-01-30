@@ -881,6 +881,13 @@ python tests/benchmark_worker_e2e.py --exe dist/dsu/dsu-demucs --worker demucs \
    - Check feature_dim and layer parameters
    - Ensure correct model_type is specified
 
+6. **Mac / Max (DSU_VSTOPIA etc.): `No module named 'loralib'`**
+   - **loralib is optional** for inference. BS-RoFormer separation does not use it; only LoRA training/adapter features do.
+   - The repo’s `utils/model_utils.py` uses a **try/except** around `import loralib` and sets `lora = None` if missing. That allows inference without loralib.
+   - If you see this error, the **deployed** `model_utils` (e.g. `dsu/utils/model_utils.py` in DSU_VSTOPIA / Max) is an older version with an unconditional `import loralib`, or a **different** `utils` package is on `sys.path` first (e.g. another project folder) and that one still imports loralib.
+   - **Debug:** Run the worker with `DSU_DEBUG_LORALIB=1`. If the optional-import version is loaded, stderr will show `[model_utils] loaded from ...` and `loralib available: False`. If you never see that and still get `No module named 'loralib'`, the running code is still the old one.
+   - **Fix:** Update the `model_utils` that is **actually** used at runtime (check `sys.path` and worker cwd) to match the repo’s `utils/model_utils.py` (at least the optional import block). **Do not** add loralib as a required dependency for inference; keep it optional.
+
 ---
 
 ## File Locations

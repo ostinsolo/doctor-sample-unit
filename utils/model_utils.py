@@ -18,8 +18,18 @@ try:
     import loralib as lora  # type: ignore
 except Exception:  # pragma: no cover
     lora = None
+
+def _loralib_status():
+    """Debug: which model_utils is loaded and whether loralib is available. Set DSU_DEBUG_LORALIB=1 to log."""
+    if os.environ.get("DSU_DEBUG_LORALIB"):
+        import sys
+        print(f"[model_utils] loaded from {__file__!r}", file=sys.stderr)
+        print(f"[model_utils] loralib available: {lora is not None}", file=sys.stderr)
+
 # from .muon import Muon, AdaGO  # Optional for training
 import torch.distributed as dist
+
+_loralib_status()
 
 
 def _require_loralib() -> None:
@@ -233,6 +243,11 @@ def demix_fast(
     border = chunk_size - step
     length_init = mix.shape[-1]
     
+    # Avoid unfold+trim for short audio: can cause doubled output when run repeatedly.
+    # Use standard demix chunk loop instead (handles short inputs without special trim).
+    if length_init < chunk_size:
+        return demix(config, model, mix, device, model_type, pbar)
+    
     # Create base windowing array
     windowing_array = _getWindowingArray(chunk_size, fade_size)
     
@@ -243,18 +258,7 @@ def demix_fast(
     
     # Pad to make length divisible by step for clean unfold
     padded_length = mix.shape[-1]
-    
-    # If audio is shorter than chunk_size, pad it to fit at least one chunk
-    # This allows fast mode to work on any file length
     short_audio_pad = 0
-    if padded_length < chunk_size:
-        short_audio_pad = chunk_size - padded_length
-        # reflect padding requires pad < input_len; fall back to constant for very short files
-        pad_mode = "reflect" if short_audio_pad < padded_length else "constant"
-        mix = nn.functional.pad(mix, (0, short_audio_pad), mode=pad_mode, value=0.0)
-        padded_length = mix.shape[-1]
-        if should_print:
-            print(f"  Short audio padded: {length_init} -> {padded_length} samples")
     
     remainder = (padded_length - chunk_size) % step
     extra_pad = 0

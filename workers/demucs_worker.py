@@ -76,7 +76,8 @@ def _configure_demucs_cache():
     - Prefer an existing torch hub cache (avoid downloads)
     - Force torch.hub to load Demucs checkpoints with weights_only=False
     
-    Note: Audio I/O is handled directly via soundfile, not torchaudio.
+    Worker mode uses Demucs load_track (ffmpeg / torchaudio + convert_audio) and
+    save_audio (torchaudio) as in the original CLI.
     """
     # Prefer user's existing DSU torch cache if present.
     # Node can override by setting DSU_TORCH_HOME or TORCH_HOME in the environment.
@@ -129,33 +130,74 @@ def _configure_demucs_cache():
         pass
 
 
-def save_audio_soundfile(wav, path, sample_rate):
+def _load_track_safe(path, audio_channels, samplerate):
     """
-    Save audio tensor to WAV file using soundfile (avoids torchcodec issues).
-    
-    Args:
-        wav: Tensor of shape (channels, samples) or (samples,)
-        path: Output file path
-        sample_rate: Sample rate in Hz
+    Demucs-style load: ffmpeg (AudioFile) or torchaudio + convert_audio.
+    Same channel/resample behavior as demucs.separate.load_track; no custom
+    mono→stereo. Returns (wav, None) on success or (None, error_msg) on failure.
     """
+    import subprocess
+    from pathlib import Path
+    from demucs.audio import AudioFile, convert_audio
+
+    path = Path(path)
+    errors = {}
+    wav = None
+    try:
+        wav = AudioFile(path).read(
+            streams=0,
+            samplerate=samplerate,
+            channels=audio_channels,
+        )
+    except FileNotFoundError:
+        errors["ffmpeg"] = "FFmpeg is not installed."
+    except subprocess.CalledProcessError:
+        errors["ffmpeg"] = "FFmpeg could not read the file."
+
+    if wav is None:
+        try:
+            import torchaudio as ta
+            wav, sr = ta.load(str(path))
+        except RuntimeError as err:
+            errors["torchaudio"] = str(err.args[0]) if err.args else str(err)
+        else:
+            wav = convert_audio(wav, sr, samplerate, audio_channels)
+
+    if wav is None:
+        msg = "Could not load file. " + " ".join(f"{k}: {v}" for k, v in errors.items())
+        return None, msg
+    return wav, None
+
+
+def _save_audio_demucs_or_fallback(wav, path, samplerate, clip="rescale", bits_per_sample=16, **kwargs):
+    """
+    Use Demucs save_audio (torchaudio) when possible. If torchcodec is missing
+    and torchaudio.save fails, fall back to soundfile with prevent_clip + PCM_16
+    so behavior matches Demucs and avoids crackling.
+    """
+    from demucs.audio import save_audio, prevent_clip
+
+    try:
+        save_audio(wav, path, samplerate=samplerate, clip=clip, bits_per_sample=bits_per_sample, **kwargs)
+        return
+    except Exception as e:
+        err = str(e).lower()
+        if "torchcodec" not in err and "module" not in err:
+            raise
     import soundfile as sf
-
-    # Move to CPU and convert to numpy
+    wav = prevent_clip(wav, mode=clip)
     data = wav.detach().cpu().numpy()
-
-    # soundfile expects (samples, channels), we have (channels, samples)
     if data.ndim == 2:
-        data = data.T  # (C, T) -> (T, C)
+        data = data.T
+    subtype = {16: "PCM_16", 24: "PCM_24", 32: "PCM_32"}.get(bits_per_sample, "PCM_16")
+    sf.write(str(path), data, samplerate, subtype=subtype)
 
-    sf.write(path, data, sample_rate)
 
-
-def _patch_demucs_save_audio_to_use_soundfile():
+def _patch_cli_save_audio_to_soundfile():
     """
-    Replace demucs.audio.save_audio with a soundfile-based implementation.
-    Avoids torchaudio.save -> torchcodec on Windows/Mac when using CLI (e.g.
-    dsu-demucs -n htdemucs file.wav -o out). Worker mode already uses
-    save_audio_soundfile; this patch fixes the CLI path.
+    When running standard CLI (not worker), replace Demucs save_audio with a
+    soundfile-based implementation. Avoids torchaudio.save -> torchcodec when
+    torchcodec is not installed. Uses prevent_clip + PCM_16 like Demucs.
     """
     import demucs.audio as _da
     from pathlib import Path
@@ -164,16 +206,7 @@ def _patch_demucs_save_audio_to_use_soundfile():
     _prevent_clip = _da.prevent_clip
     _encode_mp3 = _da.encode_mp3
 
-    def _save_audio(
-        wav,
-        path,
-        samplerate,
-        bitrate=320,
-        clip="rescale",
-        bits_per_sample=16,
-        as_float=False,
-        preset=2,
-    ):
+    def _save(wav, path, samplerate, bitrate=320, clip="rescale", bits_per_sample=16, as_float=False, preset=2):
         wav = _prevent_clip(wav, mode=clip)
         path = Path(path)
         suffix = path.suffix.lower()
@@ -181,28 +214,20 @@ def _patch_demucs_save_audio_to_use_soundfile():
             _encode_mp3(wav, path, samplerate, bitrate, preset, verbose=True)
             return
         if suffix == ".wav":
-            if as_float:
-                subtype = "FLOAT"
-            else:
-                subtype = {16: "PCM_16", 24: "PCM_24", 32: "PCM_32"}.get(
-                    bits_per_sample, "PCM_16"
-                )
+            subtype = "FLOAT" if as_float else {16: "PCM_16", 24: "PCM_24", 32: "PCM_32"}.get(bits_per_sample, "PCM_16")
         elif suffix == ".flac":
-            subtype = {16: "PCM_16", 24: "PCM_24", 32: "PCM_32"}.get(
-                bits_per_sample, "PCM_16"
-            )
+            subtype = {16: "PCM_16", 24: "PCM_24", 32: "PCM_32"}.get(bits_per_sample, "PCM_16")
         else:
             raise ValueError(f"Invalid suffix for path: {suffix}")
-
         data = wav.detach().cpu().numpy()
         if data.ndim == 2:
             data = data.T
         sf.write(str(path), data, samplerate, subtype=subtype)
 
-    _da.save_audio = _save_audio
-    # demucs.separate does "from .audio import save_audio" and uses that ref
+    _da.save_audio = _save
     import demucs.separate as _ds
-    _ds.save_audio = _save_audio
+    _ds.save_audio = _save
+
 
 def _patched_getsourcelines(obj):
     try:
@@ -415,14 +440,10 @@ def worker_mode():
     # Import heavy modules now
     try:
         import torch
-        import torchaudio
-        import soundfile as sf
-        import numpy as np
         from pathlib import Path
 
         _configure_demucs_cache()
         
-        # Import demucs modules
         from demucs.pretrained import get_model, SOURCES
         from demucs.apply import apply_model
         
@@ -585,9 +606,20 @@ def worker_mode():
                 model_name = job.get("model")
                 repo_path = job.get("repo")  # Optional: path to custom model repo
                 two_stems = job.get("two_stems")  # e.g., "vocals" for vocals + no_vocals
-                shifts = job.get("shifts", 1)
                 overlap = job.get("overlap", 0.25)
-                
+                jobs = max(0, int(job.get("jobs", 0)))  # -j / num_workers: segment-level parallelism (CPU-only)
+                segment = job.get("segments") or job.get("segment")  # optional override (seconds)
+                if segment is not None:
+                    try:
+                        segment = float(segment)
+                    except (TypeError, ValueError):
+                        segment = None
+                if "shifts" in job:
+                    shifts = job["shifts"]
+                else:
+                    m = (model_name or current_model_name or "").lower()
+                    shifts = 0 if m in ("mdx_q", "mdx_extra_q") else 1
+
                 if not input_path:
                     send_json({"status": "error", "message": "No input file specified"})
                     continue
@@ -596,11 +628,14 @@ def worker_mode():
                     send_json({"status": "error", "message": f"Input file not found: {input_path}"})
                     continue
                 
+                # Normalize for comparison (avoid spurious reload from trim/case mismatch)
+                def _n(s):
+                    return (s or "").strip().lower()
                 # Load model if different or not loaded (including repo change)
                 needs_reload = (
-                    model is None or 
-                    (model_name and model_name != current_model_name) or
-                    (repo_path and repo_path != current_repo)
+                    model is None or
+                    (model_name and _n(model_name) != _n(current_model_name or "")) or
+                    (repo_path is not None and (current_repo is None or (repo_path or "").strip() != (current_repo or "").strip()))
                 )
                 
                 if needs_reload:
@@ -647,73 +682,73 @@ def worker_mode():
                 try:
                     send_json({"status": "separating", "input": os.path.basename(input_path)})
                     start_time = time.time()
-                    
-                    # Load audio using soundfile
-                    audio_np, sr = sf.read(input_path)
-                    # Convert to torch tensor in expected format (channels, samples)
-                    if audio_np.ndim == 1:
-                        audio_np = np.stack([audio_np, audio_np])  # Mono to stereo
-                    else:
-                        audio_np = audio_np.T  # (samples, channels) -> (channels, samples)
-                    wav = torch.from_numpy(audio_np.astype(np.float32))
-                    
-                    # Resample if needed
-                    if sr != model.samplerate:
-                        wav = torchaudio.transforms.Resample(sr, model.samplerate)(wav)
-                    
-                    # Add batch dimension
-                    wav = wav.unsqueeze(0).to(device)
-                    
-                    # Apply model
+
+                    wav, load_err = _load_track_safe(
+                        input_path, model.audio_channels, model.samplerate
+                    )
+                    if load_err:
+                        send_json({"status": "error", "message": load_err})
+                        continue
+
+                    # Demucs CLI: normalize input, denormalize output (same as separate.py)
+                    ref = wav.mean(0)
+                    wav = wav - ref.mean()
+                    s = ref.std()
+                    if s > 1e-8:
+                        wav = wav / s
+
+                    apply_kw = dict(
+                        shifts=shifts,
+                        overlap=overlap,
+                        progress=False,
+                        device=device,
+                        num_workers=jobs,
+                    )
+                    if segment is not None and segment > 0:
+                        apply_kw["segment"] = segment
                     with torch.no_grad():
-                        sources = apply_model(
-                            model, wav,
-                            shifts=shifts,
-                            overlap=overlap,
-                            progress=False
-                        )
-                    
-                    # Create output directory
+                        sources = apply_model(model, wav[None].to(device), **apply_kw)[0]
+                    if s > 1e-8:
+                        sources = sources * s
+                    sources = sources + ref.mean()
+
                     input_basename = os.path.splitext(os.path.basename(input_path))[0]
                     out_dir = Path(output_dir) / current_model_name / input_basename
                     out_dir.mkdir(parents=True, exist_ok=True)
-                    
-                    # Save stems using soundfile (avoids torchcodec issues)
+
+                    save_kw = {
+                        "samplerate": model.samplerate,
+                        "clip": "rescale",
+                        "bits_per_sample": 16,
+                    }
                     output_files = []
                     stems = list(model.sources)
-                    
+
                     if two_stems:
-                        # Two-stems mode: output target + no_target
                         target_idx = None
                         for i, stem in enumerate(stems):
                             if stem.lower() == two_stems.lower():
                                 target_idx = i
                                 break
-                        
                         if target_idx is not None:
-                            # Save target stem
-                            target_path = out_dir / f"{two_stems}.wav"
-                            save_audio_soundfile(sources[0, target_idx], str(target_path), model.samplerate)
+                            _save_audio_demucs_or_fallback(
+                                sources[target_idx], str(out_dir / f"{two_stems}.wav"), **save_kw
+                            )
                             output_files.append(f"{two_stems}.wav")
-                            
-                            # Combine and save "no_target"
-                            no_target = sources[0].sum(dim=0) - sources[0, target_idx]
-                            no_target_path = out_dir / f"no_{two_stems}.wav"
-                            save_audio_soundfile(no_target, str(no_target_path), model.samplerate)
+                            no_target = sources.sum(dim=0) - sources[target_idx]
+                            _save_audio_demucs_or_fallback(
+                                no_target, str(out_dir / f"no_{two_stems}.wav"), **save_kw
+                            )
                             output_files.append(f"no_{two_stems}.wav")
                         else:
-                            # All stems (target not found)
                             for i, stem in enumerate(stems):
-                                stem_path = out_dir / f"{stem}.wav"
-                                save_audio_soundfile(sources[0, i], str(stem_path), model.samplerate)
+                                _save_audio_demucs_or_fallback(sources[i], str(out_dir / f"{stem}.wav"), **save_kw)
                                 output_files.append(f"{stem}.wav")
                     else:
-                        # All stems
                         for i, stem in enumerate(stems):
-                            stem_path = out_dir / f"{stem}.wav"
-                            save_audio_soundfile(sources[0, i], str(stem_path), model.samplerate)
+                            _save_audio_demucs_or_fallback(sources[i], str(out_dir / f"{stem}.wav"), **save_kw)
                             output_files.append(f"{stem}.wav")
-                    
+
                     elapsed = time.time() - start_time
                     
                     send_json({
@@ -861,11 +896,8 @@ def main():
         sys.argv.remove('--worker')
         sys.exit(worker_mode())
     else:
-        # Configure torch cache for demucs checkpoints
         _configure_demucs_cache()
-        # Use soundfile for saving (avoids torchaudio.save -> torchcodec on Win/Mac)
-        _patch_demucs_save_audio_to_use_soundfile()
-        # Standard Demucs CLI
+        _patch_cli_save_audio_to_soundfile()
         from demucs.separate import main as demucs_main
         demucs_main()
 
