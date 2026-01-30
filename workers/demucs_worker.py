@@ -13,6 +13,44 @@ Usage:
 
 import os
 import sys
+
+# =============================================================================
+# macOS: Set DYLD_LIBRARY_PATH for third-party FFmpeg (torchcodec) BEFORE any
+# torch imports. Config at DSU/dsu_config.json (e.g. /Users/ostino/DSU/dsu_config.json).
+# =============================================================================
+if getattr(sys, "frozen", False) and sys.platform == "darwin":
+    _ffmpeg_lib = os.environ.get("DSU_FFMPEG_LIB_PATH")
+    if not _ffmpeg_lib:
+        _exe_dir = os.path.dirname(sys.executable)
+        for _cfg in (
+            os.path.join(_exe_dir, "dsu_config.json"),
+            os.path.join(os.path.dirname(_exe_dir), "dsu_config.json"),
+        ):
+            if os.path.isfile(_cfg):
+                try:
+                    with open(_cfg) as _f:
+                        _data = __import__("json").load(_f) or {}
+                    _ffmpeg_lib = (_data.get("ffmpeg") or {}).get("lib_path") or _data.get("ffmpeg_lib_path")
+                    if _ffmpeg_lib:
+                        break
+                except Exception:
+                    pass
+    if not _ffmpeg_lib:
+        # Derive from DSU layout: .../ThirdPartyApps/ffmpeg/lib
+        _exe_dir = os.path.dirname(sys.executable)
+        _base = os.path.dirname(_exe_dir)
+        _third = os.path.join(_base, "ThirdPartyApps") if not _base.endswith("ThirdPartyApps") else _base
+        _cand = os.path.join(_third, "ffmpeg", "lib")
+        if os.path.isdir(_cand):
+            try:
+                if any(f.startswith("libavutil") for f in os.listdir(_cand)):
+                    _ffmpeg_lib = _cand
+            except OSError:
+                pass
+    if _ffmpeg_lib and os.path.isdir(_ffmpeg_lib):
+        _cur = os.environ.get("DYLD_LIBRARY_PATH", "")
+        os.environ["DYLD_LIBRARY_PATH"] = _ffmpeg_lib + (os.pathsep + _cur if _cur else "")
+
 import json
 import time
 import traceback

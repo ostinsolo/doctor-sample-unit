@@ -129,6 +129,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-mps-
 
+      - name: Install FFmpeg (required by torchcodec)
+        run: brew install ffmpeg
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip

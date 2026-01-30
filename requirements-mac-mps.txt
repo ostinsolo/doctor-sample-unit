@@ -35,7 +35,7 @@ pydub>=0.25.0
 scipy>=1.10.0
 resampy>=0.4.0
 
-# Demucs (torchaudio.save uses torchcodec for WAV encode/decode)
+# Demucs (torchaudio.save uses torchcodec for WAV encode/decode; needs FFmpeg: brew install ffmpeg)
 demucs>=4.0.0
 torchcodec>=0.5
 

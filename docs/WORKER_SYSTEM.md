@@ -897,6 +897,14 @@ Executables:     dist/dsu/dsu-*       (Mac/Linux: no extension; Windows: dsu-*.e
 Workers:         workers/*.py
 Configs:         configs/*.yaml
 Models:          ~/Documents/DSU/ThirdPartyApps/Models (or DSU_MODELS)
+
+**macOS FFmpeg (torchcodec):** Demucs uses torchcodec for WAV save. FFmpeg libs must be findable:
+- **Build/CI:** `brew install ffmpeg` (Homebrew)
+- **Deployment:** Config at `DSU/dsu_config.json` (e.g. `/Users/ostino/DSU/dsu_config.json`). Example:
+  ```json
+  {"ffmpeg": {"lib_path": "/path/to/DSU/ThirdPartyApps/ffmpeg/lib"}}
+  ```
+  Or set env `DSU_FFMPEG_LIB_PATH`. See `configs/dsu_config.example.json`.
 Test audio:      tests/audio/         (test_4s.wav, test_40s.wav, test_mix.wav, ...)
 Benchmark out:   tests/benchmark_output/
 ```

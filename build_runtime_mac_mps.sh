@@ -104,6 +104,13 @@ echo ""
 echo "[3/5] Upgrading pip..."
 pip install --upgrade pip --quiet
 
+# FFmpeg (required by torchcodec for Demucs save/load)
+if ! brew list ffmpeg &>/dev/null; then
+    echo ""
+    echo "Installing FFmpeg (required by torchcodec)..."
+    brew install ffmpeg
+fi
+
 # Install dependencies
 echo ""
 echo "[4/5] Installing dependencies (MPS optimized)..."

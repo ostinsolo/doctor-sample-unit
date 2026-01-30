@@ -36,6 +36,12 @@ echo "Ensuring samplerate>=0.2.3 for VR separation (Mac ARM)..."
 $PYTHON -m pip install 'samplerate>=0.2.3' --force-reinstall -q
 $PYTHON -c "import samplerate; print(f'  samplerate {samplerate.__version__}')"
 
+echo "Ensuring FFmpeg (required by torchcodec for Demucs save/load)..."
+if ! brew list ffmpeg &>/dev/null; then
+  echo "Installing FFmpeg via Homebrew..."
+  brew install ffmpeg
+fi
+
 echo "Ensuring torchcodec (Demucs/torchaudio save)..."
 $PYTHON -m pip install 'torchcodec>=0.5' -q
 $PYTHON -c "import torchcodec; print('  torchcodec OK')"
