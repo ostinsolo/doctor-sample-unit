@@ -83,6 +83,7 @@ logs/
 test_*.py
 test_*.js
 !workers/test_*.py
+!scripts/test_optional_imports.py
 main.py
 setup_build_env.bat
 test_build_env.bat

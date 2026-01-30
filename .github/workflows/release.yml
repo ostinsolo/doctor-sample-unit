@@ -26,10 +26,21 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install FFmpeg shared (required by torchcodec - needs DLLs)
-        uses: FedericoCarboni/setup-ffmpeg@v3
-        with:
-          linking-type: shared
+      - name: Install FFmpeg full-shared (torchcodec needs DLLs)
+        run: |
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z"
+          $out = "$env:RUNNER_TEMP\ffmpeg-shared.7z"
+          $extract = "$env:RUNNER_TEMP\ffmpeg"
+          Write-Host "Downloading FFmpeg full-shared..."
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          New-Item -ItemType Directory -Force -Path $extract | Out-Null
+          & "C:\Program Files\7-Zip\7z.exe" x $out "-o$extract" -y
+          $rootDir = (Get-ChildItem -Path $extract -Directory | Select-Object -First 1).FullName
+          $binPath = Join-Path $rootDir "bin"
+          if (Test-Path (Join-Path $binPath "ffmpeg.exe")) { $pathToAdd = $binPath } else { $pathToAdd = $rootDir }
+          echo "$pathToAdd" >> $env:GITHUB_PATH
+          $env:Path = "$pathToAdd;$env:Path"
+          ffmpeg -version
 
       - name: Cache pip packages
         uses: actions/cache@v4
@@ -81,10 +92,21 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install FFmpeg shared (required by torchcodec - needs DLLs)
-        uses: FedericoCarboni/setup-ffmpeg@v3
-        with:
-          linking-type: shared
+      - name: Install FFmpeg full-shared (torchcodec needs DLLs)
+        run: |
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z"
+          $out = "$env:RUNNER_TEMP\ffmpeg-shared.7z"
+          $extract = "$env:RUNNER_TEMP\ffmpeg"
+          Write-Host "Downloading FFmpeg full-shared..."
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          New-Item -ItemType Directory -Force -Path $extract | Out-Null
+          & "C:\Program Files\7-Zip\7z.exe" x $out "-o$extract" -y
+          $rootDir = (Get-ChildItem -Path $extract -Directory | Select-Object -First 1).FullName
+          $binPath = Join-Path $rootDir "bin"
+          if (Test-Path (Join-Path $binPath "ffmpeg.exe")) { $pathToAdd = $binPath } else { $pathToAdd = $rootDir }
+          echo "$pathToAdd" >> $env:GITHUB_PATH
+          $env:Path = "$pathToAdd;$env:Path"
+          ffmpeg -version
 
       - name: Cache pip packages
         uses: actions/cache@v4

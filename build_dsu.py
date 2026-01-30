@@ -26,6 +26,20 @@ sys.setrecursionlimit(5000)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# =============================================================================
+# Windows: Add FFmpeg bin to DLL search path before any torchcodec import.
+# Torchcodec finds ffmpeg via shutil.which() and adds its dir - but we add it
+# early so PATH from the caller (CI, simulate_windows_build.bat) is respected.
+# gyan.dev full-shared has all DLLs in one folder; no conda/MinGW needed.
+# =============================================================================
+if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
+    ff = shutil.which("ffmpeg")
+    if ff:
+        try:
+            os.add_dll_directory(os.path.dirname(ff))
+        except OSError:
+            pass
+
 # Application branding
 APP_NAME = "Doctor Sample Unit"
 APP_VERSION = "1.3.0"
@@ -157,10 +171,11 @@ PROJECT_PACKAGES = [
 ALL_PACKAGES = TORCH_PACKAGES + AUDIO_PACKAGES + STDLIB_PACKAGES + PROJECT_PACKAGES
 
 # =============================================================================
-# Optional packages (skipped if not installed)
+# Optional packages (skipped if not installed or fails to load)
 # - CUDA: sageattention, triton (Windows/Linux NVIDIA)
-# - torchcodec: torchaudio save/load (Demucs). If missing, Demucs worker uses
-#   soundfile fallback.
+# - torchcodec: torchaudio save/load (Demucs). If missing/fails, Demucs uses
+#   soundfile fallback. torchcodec can raise RuntimeError on Windows when
+#   FFmpeg shared DLLs are not findable (even if the package is installed).
 # =============================================================================
 OPTIONAL_PACKAGES = ["sageattention", "triton", "torchcodec"]
 
@@ -170,8 +185,8 @@ for pkg in OPTIONAL_PACKAGES:
         ALL_PACKAGES.append(pkg)
         kind = "CUDA" if pkg in ("sageattention", "triton") else "torchcodec"
         print(f"  Including optional package ({kind}): {pkg}")
-    except ImportError:
-        print(f"  Skipping optional package (not installed): {pkg}")
+    except (ImportError, RuntimeError, OSError) as e:
+        print(f"  Skipping optional package (not available): {pkg} - {type(e).__name__}")
 
 # =============================================================================
 # Modules to exclude (reduce size, not needed at runtime)
