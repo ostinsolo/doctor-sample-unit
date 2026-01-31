@@ -103,7 +103,53 @@ echo "[4/5] Installing dependencies..."
 echo "This will take 5-10 minutes..."
 echo ""
 
+# CRITICAL: Install llvmlite/numba with pre-built wheels first to avoid compilation errors
+# This must be done before installing other packages that depend on them
+echo "Installing llvmlite/numba with pre-built wheels (avoids compilation on Intel Mac)..."
+pip install --only-binary=:all: llvmlite numba
+
+# Install build tool
+echo "Installing build tool (cx-Freeze)..."
+pip install 'cx-Freeze==6.15.16'
+
+# Install PyTorch and core dependencies from requirements file
+echo "Installing PyTorch and core dependencies..."
 pip install -r "$SCRIPT_DIR/requirements-mac-intel.txt"
+
+# Install audio-separator separately with --no-deps to work around torch version conflict
+# (audio-separator requires torch>=2.3, but PyTorch 2.3+ is not available for Intel Mac)
+# Then install its dependencies manually (matching build-intel.sh approach)
+echo ""
+echo "Installing audio-separator (with --no-deps for Intel Mac compatibility)..."
+pip install 'audio-separator==0.41.0' --no-deps || pip install 'audio-separator>=0.39.0' --no-deps || echo "WARNING: Could not install audio-separator, some features may be unavailable"
+
+# Install audio-separator dependencies manually (from build-intel.sh)
+# These are already in requirements-mac-intel.txt, but ensuring they're installed
+echo "Ensuring audio-separator dependencies are installed..."
+pip install \
+    requests \
+    librosa \
+    samplerate \
+    six \
+    tqdm \
+    pydub \
+    onnx \
+    onnx2torch \
+    onnxruntime \
+    julius \
+    diffq \
+    einops \
+    pyyaml \
+    ml_collections \
+    resampy \
+    beartype \
+    rotary-embedding-torch \
+    scipy \
+    soundfile \
+    pytorch-lightning \
+    huggingface_hub \
+    omegaconf \
+    torchvision
 
 # Verify installation
 echo ""
@@ -116,8 +162,17 @@ python -c "import numpy; print(f'NumPy: {numpy.__version__}')"
 python -c "import librosa; print(f'Librosa: {librosa.__version__}')"
 python -c "import soundfile; print(f'SoundFile: {soundfile.__version__}')"
 python -c "import demucs; print(f'Demucs: {demucs.__version__}')"
-python -c "import torchcodec; print('TorchCodec: OK (torchaudio save/load)')"
-python -c "import audio_separator; v=getattr(audio_separator,'__version__','(no version)'); print(f'Audio-Separator: {v}')"
+python -c "try:
+    import torchcodec
+    print('TorchCodec: OK (torchaudio save/load)')
+except ImportError:
+    print('TorchCodec: Not available (using soundfile fallback)')"
+python -c "try:
+    import audio_separator
+    v=getattr(audio_separator,'__version__','(no version)')
+    print(f'Audio-Separator: {v}')
+except ImportError:
+    print('Audio-Separator: Not available (optional on Intel Mac)')"
 
 # Deactivate
 deactivate 2>/dev/null || true

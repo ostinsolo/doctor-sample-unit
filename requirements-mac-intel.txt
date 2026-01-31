@@ -11,20 +11,25 @@
 # PyTorch for Mac Intel
 # Use 2.2.2 for maximum compatibility with Intel Macs
 # (Newer versions may have issues with llvmlite/numba on Intel)
+# Note: PyTorch 2.3+ is not available for Intel Mac
 # -----------------------------------------------------------------------------
 torch==2.2.2
 torchaudio==2.2.2
 torchvision==0.17.2
 
 # -----------------------------------------------------------------------------
-# NumPy - Use numpy>=2 (tested compatible with all architectures)
+# NumPy - Use numpy<2 for torch 2.2.2 compatibility on Intel Mac
+# (numpy>=2 may cause compatibility issues with torch 2.2.2)
 # -----------------------------------------------------------------------------
-numpy>=2.0.0
+numpy<2
 
 # -----------------------------------------------------------------------------
 # Audio Processing Core
 # -----------------------------------------------------------------------------
-audio-separator==0.41.0
+# audio-separator: Will be installed separately with --no-deps due to torch version conflict
+# Note: Recent versions require torch>=2.3, but PyTorch 2.3+ is not available for Intel Mac
+# We'll install it separately after other dependencies to work around the version conflict
+# audio-separator==0.41.0
 librosa>=0.10.0
 soundfile>=0.12.0
 samplerate==0.1.0
@@ -32,9 +37,10 @@ pydub>=0.25.0
 scipy>=1.10.0
 resampy>=0.4.0
 
-# Demucs (torchaudio.save uses torchcodec for WAV encode/decode; needs FFmpeg: brew install ffmpeg)
+# Demucs (uses soundfile for audio I/O to avoid torchcodec dependency issues on Intel Mac)
+# torchcodec is optional - workers use soundfile fallback when torchcodec is not available
 demucs>=4.0.0
-torchcodec>=0.5
+# torchcodec>=0.5  # Optional - not available for Intel Mac, soundfile is used instead
 
 # -----------------------------------------------------------------------------
 # ONNX (CPU version)

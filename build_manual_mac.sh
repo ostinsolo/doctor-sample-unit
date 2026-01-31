@@ -31,20 +31,31 @@ else
   echo "WARNING: No runtime/ found. Using python3. Run setup_local_mac.sh first."
 fi
 
-# Mac ARM: audio-separator pins samplerate==0.1.0 (x86_64-only dylib). Use 0.2.3+ (universal2).
-echo "Ensuring samplerate>=0.2.3 for VR separation (Mac ARM)..."
-$PYTHON -m pip install 'samplerate>=0.2.3' --force-reinstall -q
-$PYTHON -c "import samplerate; print(f'  samplerate {samplerate.__version__}')"
-
-echo "Ensuring FFmpeg (required by torchcodec for Demucs save/load)..."
-if ! brew list ffmpeg &>/dev/null; then
-  echo "Installing FFmpeg via Homebrew..."
-  brew install ffmpeg
+# Check architecture for platform-specific setup
+ARCH=$(uname -m)
+if [[ "$ARCH" = "arm64" ]]; then
+  # Mac ARM: audio-separator pins samplerate==0.1.0 (x86_64-only dylib). Use 0.2.3+ (universal2).
+  echo "Detected: Apple Silicon (arm64)"
+  echo "Ensuring samplerate>=0.2.3 for VR separation (Mac ARM)..."
+  $PYTHON -m pip install 'samplerate>=0.2.3' --force-reinstall -q
+  $PYTHON -c "import samplerate; print(f'  samplerate {samplerate.__version__}')"
+  
+  echo "Ensuring FFmpeg (required by torchcodec for Demucs save/load)..."
+  if ! brew list ffmpeg &>/dev/null; then
+    echo "Installing FFmpeg via Homebrew..."
+    brew install ffmpeg
+  fi
+  
+  echo "Ensuring torchcodec (Demucs/torchaudio save)..."
+  $PYTHON -m pip install 'torchcodec>=0.5' -q
+  $PYTHON -c "import torchcodec; print('  torchcodec OK')"
+else
+  # Intel Mac: torchcodec not available, using soundfile fallback
+  echo "Detected: Intel (x86_64)"
+  echo "Intel Mac: torchcodec not available, using soundfile for audio I/O"
+  echo "Ensuring soundfile is available..."
+  $PYTHON -c "import soundfile; print(f'  soundfile {soundfile.__version__} OK')"
 fi
-
-echo "Ensuring torchcodec (Demucs/torchaudio save)..."
-$PYTHON -m pip install 'torchcodec>=0.5' -q
-$PYTHON -c "import torchcodec; print('  torchcodec OK')"
 
 echo "Building with build_dsu.py..."
 $PYTHON build_dsu.py
