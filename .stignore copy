@@ -1,0 +1,44 @@
+# Syncthing ignore – don't sync envs or build output between Mac/Windows
+# Mac: runtime/ (setup_local_mac, build_runtime_mac_*)
+# Windows: build_env/ (build_manual.bat, setup_build_env)
+# Both: dist/, other local venvs
+
+runtime/
+build_env/
+dist/
+build/
+bin/
+
+venv/
+.venv/
+env/
+ENV/
+simulate_ci_venv/
+simulate_ci_out/
+simulate_*/
+
+tests/benchmark_output/
+tests/*_output/
+tests/audio/
+tests/node_runs/
+tests/node_test_output/
+tests/parallel_test_output/
+tests/v132_test_output/
+tests/final_test_output/
+tests/optimized_test_output/
+tests/optimized_output/
+tests/sequence_output/
+tests/validation_output/
+
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+*.egg
+
+.DS_Store
+Thumbs.db
+*.log
+logs/

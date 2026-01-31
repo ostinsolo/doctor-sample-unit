@@ -716,7 +716,7 @@ def separate_impl(model, config, input_path, output_dir, model_info, device='cpu
 
     # Apply TTA if requested
     if use_tta and isinstance(waveforms, dict):
-        waveforms = apply_tta(config, model, audio, waveforms, torch_device, model_info.get("type", "bs_roformer"))
+        waveforms = apply_tta(config, model, audio, waveforms, torch_device, model_info.get("type", "bs_roformer"), use_fast=use_fast)
 
     # Normalize waveforms to dict if needed
     if not isinstance(waveforms, dict):
@@ -867,7 +867,9 @@ def apollo_restore_impl(model, input_path, output_dir, model_info, device='cpu',
 
 
 def _apollo_chunk_restore(model, audio, sr, chunk_seconds, overlap_seconds, device):
-    """Restore audio in overlapping chunks to limit memory usage."""
+    """Restore audio in overlapping chunks to limit memory usage.
+    Accumulates on device and transfers once at end to reduce MPS/CUDA sync bottleneck.
+    """
     import torch
     
     total_samples = audio.shape[-1]
@@ -877,8 +879,9 @@ def _apollo_chunk_restore(model, audio, sr, chunk_seconds, overlap_seconds, devi
     if step <= 0:
         step = chunk_samples // 2
     
-    output = torch.zeros_like(audio, device="cpu")
-    weight_sum = torch.zeros_like(audio, device="cpu")
+    # Accumulate on device to avoid per-chunk GPU->CPU sync
+    output = torch.zeros_like(audio, device=device)
+    weight_sum = torch.zeros_like(audio, device=device)
     
     for start in range(0, total_samples, step):
         end = min(start + chunk_samples, total_samples)
@@ -894,17 +897,17 @@ def _apollo_chunk_restore(model, audio, sr, chunk_seconds, overlap_seconds, devi
         with torch.inference_mode():
             restored = model(chunk)
         
-        restored = restored[:, :, :chunk_len].to("cpu")
+        restored = restored[:, :, :chunk_len]  # Keep on device
         
-        # Apply crossfade weights
-        weight = torch.ones((1, 1, chunk_len), device="cpu", dtype=restored.dtype)
+        # Apply crossfade weights (on device)
+        weight = torch.ones((1, 1, chunk_len), device=device, dtype=restored.dtype)
         if overlap_samples > 0:
             if start > 0:
                 fade_in_len = min(overlap_samples, chunk_len)
-                weight[:, :, :fade_in_len] *= torch.linspace(0.0, 1.0, fade_in_len, device="cpu", dtype=restored.dtype)
+                weight[:, :, :fade_in_len] *= torch.linspace(0.0, 1.0, fade_in_len, device=device, dtype=restored.dtype)
             if end < total_samples:
                 fade_out_len = min(overlap_samples, chunk_len)
-                weight[:, :, -fade_out_len:] *= torch.linspace(1.0, 0.0, fade_out_len, device="cpu", dtype=restored.dtype)
+                weight[:, :, -fade_out_len:] *= torch.linspace(1.0, 0.0, fade_out_len, device=device, dtype=restored.dtype)
         
         output[:, :, start:end] += restored * weight
         weight_sum[:, :, start:end] += weight
@@ -914,7 +917,8 @@ def _apollo_chunk_restore(model, audio, sr, chunk_seconds, overlap_seconds, devi
             torch.cuda.empty_cache()
     
     weight_sum = torch.clamp(weight_sum, min=1e-8)
-    return output / weight_sum
+    # Single transfer at end
+    return (output / weight_sum).cpu()
 
 
 # ============================================================================

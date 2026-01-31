@@ -1,0 +1,114 @@
+# =============================================================================
+# Syncthing Ignore File for DSU Shared Runtime
+# =============================================================================
+# Excludes build artifacts, virtual environments, and platform-specific files
+# from being synced across devices
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Build Outputs (large, generated, platform-specific)
+# -----------------------------------------------------------------------------
+runtime/
+bin/
+dist/
+build/
+*.7z
+*.zip
+*.tar.gz
+dsu-*.tar.gz
+dsu-*.7z
+dsu-*.zip
+
+# -----------------------------------------------------------------------------
+# Python Cache & Compiled Files
+# -----------------------------------------------------------------------------
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.so
+*.pyd
+.Python
+*.egg-info/
+*.egg
+.eggs/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# -----------------------------------------------------------------------------
+# Virtual Environments (platform-specific, very large)
+# -----------------------------------------------------------------------------
+venv/
+ENV/
+env/
+.venv/
+build_env/
+simulate_ci_venv/
+runtime/
+
+# -----------------------------------------------------------------------------
+# IDE & Editor Files
+# -----------------------------------------------------------------------------
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# -----------------------------------------------------------------------------
+# Test Outputs & Temporary Files
+# -----------------------------------------------------------------------------
+tests/benchmark_output/
+tests/audio/*.wav
+tests/audio/*.mp3
+tests/audio/*.flac
+test_output/
+*.wav
+*.mp3
+*.flac
+simulate_ci_out/
+
+# -----------------------------------------------------------------------------
+# Model Weights (download separately, very large)
+# -----------------------------------------------------------------------------
+weights/
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.onnx
+
+# -----------------------------------------------------------------------------
+# Logs & Temporary Files
+# -----------------------------------------------------------------------------
+*.log
+logs/
+*.tmp
+*.temp
+
+# -----------------------------------------------------------------------------
+# Platform-Specific Build Artifacts
+# -----------------------------------------------------------------------------
+# Intel Mac specific
+requirements-mac-intel.txt.backup
+
+# -----------------------------------------------------------------------------
+# Syncthing Metadata
+# -----------------------------------------------------------------------------
+.stfolder/
+.stversions/
+# Note: .stignore itself should be synced so all devices use the same rules
+
+# -----------------------------------------------------------------------------
+# Local Development Files (not needed in sync)
+# -----------------------------------------------------------------------------
+ffmpeg_path.txt
+check_*.py
+test_*.py
+test_*.js
+!workers/test_*.py
+!scripts/test_optional_imports.py
