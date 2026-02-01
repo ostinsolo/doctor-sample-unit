@@ -215,8 +215,10 @@ build_options = {
     "zip_include_packages": [],
     "zip_exclude_packages": "*",  # Don't zip anything - prevents path issues
     
-    # CRITICAL: Don't optimize bytecode - can cause issues with torch
-    "optimize": 0,
+    # Bytecode optimization: optimize=1 removes assertions (safe for torch)
+    # optimize=2 also removes docstrings (may break some torch introspection)
+    # Set via environment variable: DSU_BUILD_OPTIMIZE=1 or 2 (default: 0 for safety)
+    "optimize": int(os.environ.get("DSU_BUILD_OPTIMIZE", "0")),
     
     # Build output directory (allow override to avoid Windows file locks)
     "build_exe": os.environ.get(

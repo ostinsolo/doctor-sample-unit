@@ -628,21 +628,20 @@ class BSRoformer(Module):
         mask = torch.view_as_complex(mask)
         stft_repr = stft_repr * mask
         
-        # rearrange and istft - try on current device, fallback to CPU if needed
+        # rearrange and istft - optimized paths for CPU vs MPS
+        stft_repr = rearrange(stft_repr, 'b n (f s) t -> (b n s) f t', s=self.audio_channels)
+        
         if x_is_mps:
+            # MPS path: try on device, fallback to CPU if needed
             try:
-                stft_repr = rearrange(stft_repr, 'b n (f s) t -> (b n s) f t', s=self.audio_channels)
                 recon_audio = torch.istft(stft_repr, **self.stft_kwargs, window=stft_window, return_complex=False, length=raw_audio.shape[-1])
             except Exception:
                 # Fallback for older PyTorch/MPS
-                stft_repr = rearrange(stft_repr.cpu(), 'b n (f s) t -> (b n s) f t', s=self.audio_channels)
-                recon_audio = torch.istft(stft_repr, **self.stft_kwargs, window=stft_window.cpu(), return_complex=False, length=raw_audio.shape[-1]).to(device)
+                stft_repr_cpu = stft_repr.cpu()
+                recon_audio = torch.istft(stft_repr_cpu, **self.stft_kwargs, window=stft_window.cpu(), return_complex=False, length=raw_audio.shape[-1]).to(device)
         else:
-            stft_repr = rearrange(stft_repr, 'b n (f s) t -> (b n s) f t', s=self.audio_channels)
-            try:
-                recon_audio = torch.istft(stft_repr, **self.stft_kwargs, window=stft_window, return_complex=False, length=raw_audio.shape[-1])
-            except Exception:
-                recon_audio = torch.istft(stft_repr.cpu(), **self.stft_kwargs, window=stft_window.cpu(), return_complex=False, length=raw_audio.shape[-1]).to(device)
+            # CPU path: no try/except needed - direct call (matches old build performance)
+            recon_audio = torch.istft(stft_repr, **self.stft_kwargs, window=stft_window, return_complex=False, length=raw_audio.shape[-1])
 
         recon_audio = rearrange(recon_audio, '(b n s) t -> b n s t', s=self.audio_channels, n=num_stems)
 

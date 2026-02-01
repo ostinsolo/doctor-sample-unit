@@ -43,11 +43,11 @@ demucs>=4.0.0
 # torchcodec>=0.5  # Optional - not available for Intel Mac, soundfile is used instead
 
 # -----------------------------------------------------------------------------
-# ONNX (CPU version)
+# ONNX (CPU version) - REMOVED: Not used, causes performance overhead
 # -----------------------------------------------------------------------------
-onnx>=1.14.0
-onnx2torch>=1.5.0
-onnxruntime>=1.16.0
+# onnx>=1.14.0
+# onnx2torch>=1.5.0
+# onnxruntime>=1.16.0
 
 # -----------------------------------------------------------------------------
 # Model Dependencies
@@ -66,7 +66,7 @@ tqdm>=4.65.0
 six>=1.16.0
 pyyaml>=6.0
 omegaconf>=2.3.0
-huggingface-hub>=0.20.0
+# huggingface-hub>=0.20.0  # REMOVED: Not needed - Apollo models load from local files, dummy module provided
 pytorch-lightning>=2.0.0
 ml-collections>=0.1.0
 matplotlib

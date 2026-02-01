@@ -107,9 +107,12 @@ def demix(
     batch_size = config.inference.batch_size
 
     use_amp = getattr(config.training, 'use_amp', True)
-
-    autocast_device = device.type if isinstance(device, torch.device) else str(device)
-    with torch.amp.autocast(device_type=autocast_device, enabled=use_amp):
+    
+    # OPTIMIZATION: Use torch.cuda.amp.autocast like old build
+    # On CPU, this is a no-op (does nothing, zero overhead)
+    # On CUDA/MPS, it enables mixed precision
+    # This matches the old build's approach exactly
+    with torch.cuda.amp.autocast(enabled=use_amp):
         with torch.inference_mode():
             # Initialize result and counter tensors
             req_shape = (num_instruments,) + mix.shape
@@ -289,14 +292,27 @@ def demix_fast(
     
     use_amp = getattr(config.training, 'use_amp', True)
     
-    autocast_device = device.type if isinstance(device, torch.device) else str(device)
-    with torch.amp.autocast(device_type=autocast_device, enabled=use_amp):
+    # OPTIMIZATION: Use torch.cuda.amp.autocast like old build
+    # On CPU, this is a no-op (does nothing, zero overhead)
+    # On CUDA/MPS, it enables mixed precision
+    # This matches the old build's approach exactly
+    with torch.cuda.amp.autocast(enabled=use_amp):
         with torch.inference_mode():
             # Initialize result and counter tensors
+            # OPTIMIZATION: For CPU, keep on CPU (matches old build performance)
+            # For GPU/MPS, keeping on device is faster, but on CPU it adds overhead
             result_length = mix.shape[-1]
             req_shape = (num_instruments, mix.shape[0], result_length)
-            result = torch.zeros(req_shape, dtype=torch.float32)
-            counter = torch.zeros(req_shape, dtype=torch.float32)
+            is_cpu = (device.type == "cpu" if isinstance(device, torch.device) else str(device) == "cpu")
+            if is_cpu:
+                # CPU path: keep everything on CPU (matches old build)
+                result = torch.zeros(req_shape, dtype=torch.float32)
+                counter = torch.zeros(req_shape, dtype=torch.float32)
+            else:
+                # GPU/MPS path: keep on device for performance
+                result = torch.zeros(req_shape, dtype=torch.float32, device=device)
+                counter = torch.zeros(req_shape, dtype=torch.float32, device=device)
+                windows = windows.to(device)
             
             if pbar and should_print:
                 progress_bar = tqdm(
@@ -313,7 +329,10 @@ def demix_fast(
                 
                 # Run model inference
                 outputs = model(batch_chunks)  # (batch, instruments, channels, chunk_size)
-                outputs = outputs.cpu()
+                
+                # CPU path: move to CPU immediately (matches old build)
+                if is_cpu:
+                    outputs = outputs.cpu()
                 
                 # Vectorized overlap-add with per-chunk windows
                 for i, chunk_idx in enumerate(range(batch_start, batch_end)):
@@ -333,8 +352,9 @@ def demix_fast(
             
             # Compute final result
             counter = torch.clamp(counter, min=1e-8)
-            estimated_sources = result / counter
-            estimated_sources = estimated_sources.cpu().numpy()
+            estimated_sources = (result / counter).cpu().numpy()
+            # NOTE: .cpu() is called even for CPU tensors (matches old build exactly)
+            # This is a no-op for CPU tensors but ensures consistency
             np.nan_to_num(estimated_sources, copy=False, nan=0.0)
             
             # Remove padding in reverse order of application
@@ -521,7 +541,8 @@ def apply_tta(
     mix: torch.Tensor,
     waveforms_orig: Union[dict[str, np.ndarray], np.ndarray],
     device: torch.device,
-    model_type: str
+    model_type: str,
+    use_fast: bool = True,
 ) -> Union[dict[str, np.ndarray], np.ndarray]:
     """
     Enhance source separation results using Test-Time Augmentation (TTA).
@@ -546,9 +567,10 @@ def apply_tta(
     # Create augmentations: channel inversion and polarity inversion
     track_proc_list = [mix[::-1].copy(), -1.0 * mix.copy()]
 
-    # Process each augmented mixture
+    # Process each augmented mixture (use_fast reduces GPU-CPU sync on MPS/CUDA)
+    demix_fn = demix_fast if use_fast else demix
     for i, augmented_mix in enumerate(track_proc_list):
-        waveforms = demix(config, model, augmented_mix, device, model_type=model_type)
+        waveforms = demix_fn(config, model, augmented_mix, device, model_type=model_type)
         for el in waveforms:
             if i == 0:
                 waveforms_orig[el] += waveforms[el][::-1].copy()
