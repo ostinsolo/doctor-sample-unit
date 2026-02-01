@@ -150,8 +150,6 @@ def demix(
                 if len(batch_data) >= batch_size or i >= mix.shape[1]:
                     arr = torch.stack(batch_data, dim=0)
                     x = model(arr)
-                    # Single GPU->CPU transfer per batch (avoids MPS sync per chunk)
-                    x_cpu = x.cpu()
 
                     if mode == "generic":
                         window = windowing_array.clone() # using clone() fixes the clicks at chunk edges when using batch_size=1
@@ -162,10 +160,10 @@ def demix(
 
                     for j, (start, seg_len) in enumerate(batch_locations):
                         if mode == "generic":
-                            result[..., start:start + seg_len] += x_cpu[j, ..., :seg_len] * window[..., :seg_len]
+                            result[..., start:start + seg_len] += x[j, ..., :seg_len].cpu() * window[..., :seg_len]
                             counter[..., start:start + seg_len] += window[..., :seg_len]
                         else:
-                            result[..., start:start + seg_len] += x_cpu[j, ..., :seg_len]
+                            result[..., start:start + seg_len] += x[j, ..., :seg_len].cpu()
                             counter[..., start:start + seg_len] += 1.0
 
                     batch_data.clear()
@@ -294,13 +292,11 @@ def demix_fast(
     autocast_device = device.type if isinstance(device, torch.device) else str(device)
     with torch.amp.autocast(device_type=autocast_device, enabled=use_amp):
         with torch.inference_mode():
-            # Initialize result and counter on device to avoid per-batch GPU->CPU sync
+            # Initialize result and counter tensors
             result_length = mix.shape[-1]
             req_shape = (num_instruments, mix.shape[0], result_length)
-            result = torch.zeros(req_shape, dtype=torch.float32, device=device)
-            counter = torch.zeros(req_shape, dtype=torch.float32, device=device)
-            # Move windows to device for in-place accumulation
-            windows_device = windows.to(device)
+            result = torch.zeros(req_shape, dtype=torch.float32)
+            counter = torch.zeros(req_shape, dtype=torch.float32)
             
             if pbar and should_print:
                 progress_bar = tqdm(
@@ -309,16 +305,17 @@ def demix_fast(
             else:
                 progress_bar = None
             
-            # Process in batches - accumulate on device, single transfer at end
+            # Process in batches
             for batch_start in range(0, num_chunks, batch_size):
                 batch_end = min(batch_start + batch_size, num_chunks)
                 batch_chunks = chunks[batch_start:batch_end].to(device)
-                batch_windows = windows_device[batch_start:batch_end]  # (batch, chunk_size)
+                batch_windows = windows[batch_start:batch_end]  # (batch, chunk_size)
                 
-                # Run model inference - keep on device
+                # Run model inference
                 outputs = model(batch_chunks)  # (batch, instruments, channels, chunk_size)
+                outputs = outputs.cpu()
                 
-                # Vectorized overlap-add on device (no .cpu() per batch)
+                # Vectorized overlap-add with per-chunk windows
                 for i, chunk_idx in enumerate(range(batch_start, batch_end)):
                     start_pos = chunk_idx * step
                     end_pos = start_pos + chunk_size
@@ -334,9 +331,10 @@ def demix_fast(
             if progress_bar:
                 progress_bar.close()
             
-            # Single GPU->CPU transfer at end (reduces MPS sync bottleneck)
+            # Compute final result
             counter = torch.clamp(counter, min=1e-8)
-            estimated_sources = (result / counter).cpu().numpy()
+            estimated_sources = result / counter
+            estimated_sources = estimated_sources.cpu().numpy()
             np.nan_to_num(estimated_sources, copy=False, nan=0.0)
             
             # Remove padding in reverse order of application
@@ -523,8 +521,7 @@ def apply_tta(
     mix: torch.Tensor,
     waveforms_orig: Union[dict[str, np.ndarray], np.ndarray],
     device: torch.device,
-    model_type: str,
-    use_fast: bool = True,
+    model_type: str
 ) -> Union[dict[str, np.ndarray], np.ndarray]:
     """
     Enhance source separation results using Test-Time Augmentation (TTA).
@@ -549,10 +546,9 @@ def apply_tta(
     # Create augmentations: channel inversion and polarity inversion
     track_proc_list = [mix[::-1].copy(), -1.0 * mix.copy()]
 
-    # Process each augmented mixture (use_fast reduces GPU-CPU sync on MPS/CUDA)
-    demix_fn = demix_fast if use_fast else demix
+    # Process each augmented mixture
     for i, augmented_mix in enumerate(track_proc_list):
-        waveforms = demix_fn(config, model, augmented_mix, device, model_type=model_type)
+        waveforms = demix(config, model, augmented_mix, device, model_type=model_type)
         for el in waveforms:
             if i == 0:
                 waveforms_orig[el] += waveforms[el][::-1].copy()
