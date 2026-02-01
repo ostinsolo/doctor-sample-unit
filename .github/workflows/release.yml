@@ -42,18 +42,24 @@ jobs:
           $env:Path = "$pathToAdd;$env:Path"
           ffmpeg -version
 
-      - name: Cache pip packages
+      - name: Install uv (fast Python package manager)
+        run: |
+          powershell -Command "irm https://astral.sh/uv/install.ps1 | iex"
+          $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+          uv --version
+
+      - name: Cache uv packages
         uses: actions/cache@v4
         with:
-          path: ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-cuda-${{ hashFiles('requirements-cuda.txt') }}
+          path: ~\AppData\Local\uv\Cache
+          key: ${{ runner.os }}-uv-cuda-${{ hashFiles('requirements-cuda.txt') }}
           restore-keys: |
-            ${{ runner.os }}-pip-cuda-
+            ${{ runner.os }}-uv-cuda-
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r requirements-cuda.txt
+          $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+          uv pip install -r requirements-cuda.txt
 
       - name: Build DSU
         run: python build_dsu.py
@@ -108,18 +114,24 @@ jobs:
           $env:Path = "$pathToAdd;$env:Path"
           ffmpeg -version
 
-      - name: Cache pip packages
+      - name: Install uv (fast Python package manager)
+        run: |
+          powershell -Command "irm https://astral.sh/uv/install.ps1 | iex"
+          $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+          uv --version
+
+      - name: Cache uv packages
         uses: actions/cache@v4
         with:
-          path: ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-cpu-${{ hashFiles('requirements-cpu.txt') }}
+          path: ~\AppData\Local\uv\Cache
+          key: ${{ runner.os }}-uv-cpu-${{ hashFiles('requirements-cpu.txt') }}
           restore-keys: |
-            ${{ runner.os }}-pip-cpu-
+            ${{ runner.os }}-uv-cpu-
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r requirements-cpu.txt
+          $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+          uv pip install -r requirements-cpu.txt
 
       - name: Build DSU
         run: python build_dsu.py
@@ -153,23 +165,29 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Cache pip packages
+      - name: Install uv (fast Python package manager)
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          export PATH="$HOME/.cargo/bin:$PATH"
+          uv --version
+
+      - name: Cache uv packages
         uses: actions/cache@v4
         with:
-          path: ~/Library/Caches/pip
-          key: ${{ runner.os }}-pip-mps-${{ hashFiles('requirements-mac-mps.txt') }}
+          path: ~/Library/Caches/uv
+          key: ${{ runner.os }}-uv-mps-${{ hashFiles('requirements-mac-mps.txt') }}
           restore-keys: |
-            ${{ runner.os }}-pip-mps-
+            ${{ runner.os }}-uv-mps-
 
       - name: Install FFmpeg (required by torchcodec)
         run: brew install ffmpeg
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r requirements-mac-mps.txt
+          export PATH="$HOME/.cargo/bin:$PATH"
+          uv pip install -r requirements-mac-mps.txt
           # Mac ARM: samplerate 0.1.0 ships x86_64-only libsamplerate.dylib; use 0.2.3+ (universal2, no dylib)
-          pip install 'samplerate>=0.2.3' --force-reinstall
+          uv pip install 'samplerate>=0.2.3' --force-reinstall
 
       - name: Build DSU
         run: python build_dsu.py
