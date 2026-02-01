@@ -45,6 +45,7 @@ env/
 .venv/
 build_env/
 simulate_ci_venv/
+simulate_*/
 runtime/
 
 # -----------------------------------------------------------------------------
@@ -63,9 +64,17 @@ Thumbs.db
 # Test Outputs & Temporary Files
 # -----------------------------------------------------------------------------
 tests/benchmark_output/
-tests/audio/*.wav
-tests/audio/*.mp3
-tests/audio/*.flac
+tests/*_output/
+tests/audio/
+tests/node_runs/
+tests/node_test_output/
+tests/parallel_test_output/
+tests/v132_test_output/
+tests/final_test_output/
+tests/optimized_test_output/
+tests/optimized_output/
+tests/sequence_output/
+tests/validation_output/
 test_output/
 *.wav
 *.mp3
