@@ -19,6 +19,54 @@ import os
 import sys
 
 # =============================================================================
+# CRITICAL: Set thread environment variables BEFORE any heavy imports
+# This must be done early to ensure OpenMP/BLAS use correct thread counts
+# =============================================================================
+def _set_thread_env_early():
+    """Set thread environment variables before any heavy imports"""
+    import subprocess
+    import platform
+    
+    def get_physical_cores():
+        """Get number of physical CPU cores (not logical/hyperthreaded)"""
+        system = platform.system()
+        try:
+            if system == 'Darwin':  # macOS
+                result = subprocess.run(['sysctl', '-n', 'hw.physicalcpu'], 
+                                        capture_output=True, text=True)
+                return int(result.stdout.strip())
+            elif system == 'Linux':
+                with open('/proc/cpuinfo') as f:
+                    content = f.read()
+                cores = set()
+                physical_id = core_id = None
+                for line in content.split('\n'):
+                    if 'physical id' in line:
+                        physical_id = line.split(':')[1].strip()
+                    elif 'core id' in line:
+                        core_id = line.split(':')[1].strip()
+                        if physical_id is not None:
+                            cores.add((physical_id, core_id))
+                return len(cores) if cores else os.cpu_count() // 2
+            elif system == 'Windows':
+                result = subprocess.run(['wmic', 'cpu', 'get', 'NumberOfCores'], 
+                                        capture_output=True, text=True)
+                lines = [l.strip() for l in result.stdout.split('\n') if l.strip().isdigit()]
+                return sum(int(l) for l in lines)
+        except:
+            pass
+        return max(1, os.cpu_count() // 2)
+    
+    num_threads = get_physical_cores()
+    os.environ['OMP_NUM_THREADS'] = str(num_threads)
+    os.environ['MKL_NUM_THREADS'] = str(num_threads)
+    os.environ['OPENBLAS_NUM_THREADS'] = str(num_threads)
+    os.environ['KMP_AFFINITY'] = 'granularity=fine,compact,1,0'
+    os.environ['KMP_BLOCKTIME'] = '0'
+
+_set_thread_env_early()
+
+# =============================================================================
 # CRITICAL FIX for cx_Freeze + PyTorch 2.x compatibility
 # =============================================================================
 # PyTorch 2.x's torch.compiler.config module uses inspect.getsourcelines()
@@ -212,6 +260,97 @@ def send_json(data):
 
 
 # ============================================================================
+# HELPER: Setup CPU threading optimizations (for CPU device only)
+# ============================================================================
+def get_physical_cores():
+    """Get number of physical CPU cores (not logical/hyperthreaded)"""
+    import subprocess
+    import platform
+    
+    system = platform.system()
+    try:
+        if system == 'Darwin':  # macOS
+            result = subprocess.run(['sysctl', '-n', 'hw.physicalcpu'], 
+                                    capture_output=True, text=True)
+            return int(result.stdout.strip())
+        elif system == 'Linux':
+            with open('/proc/cpuinfo') as f:
+                content = f.read()
+            cores = set()
+            physical_id = core_id = None
+            for line in content.split('\n'):
+                if 'physical id' in line:
+                    physical_id = line.split(':')[1].strip()
+                elif 'core id' in line:
+                    core_id = line.split(':')[1].strip()
+                    if physical_id is not None:
+                        cores.add((physical_id, core_id))
+            return len(cores) if cores else os.cpu_count() // 2
+        elif system == 'Windows':
+            result = subprocess.run(['wmic', 'cpu', 'get', 'NumberOfCores'], 
+                                    capture_output=True, text=True)
+            lines = [l.strip() for l in result.stdout.split('\n') if l.strip().isdigit()]
+            return sum(int(l) for l in lines)
+    except:
+        pass
+    return max(1, os.cpu_count() // 2)
+
+def _setup_cpu_threading(device, num_threads=None):
+    """
+    Configure CPU-specific threading optimizations.
+    
+    IMPORTANT: Only applies to CPU device. MPS/CUDA handle their own threading.
+    
+    Args:
+        device: Device string ("cpu", "cuda", "mps")
+        num_threads: Number of threads (None = auto-detect physical cores)
+    
+    Returns:
+        num_threads: Number of threads used
+    """
+    import torch
+    
+    if device != "cpu":
+        # For MPS/CUDA, don't override threading - GPU handles parallelism internally
+        return get_physical_cores() if num_threads is None else num_threads
+    
+    if num_threads is None:
+        num_threads = get_physical_cores()
+    
+    torch.set_num_threads(num_threads)
+    # Only set interop threads if not already set (PyTorch doesn't allow changing after parallel work starts)
+    try:
+        current_interop = torch.get_num_interop_threads()
+        if current_interop == 1:  # Default value, safe to change
+            torch.set_num_interop_threads(max(2, num_threads // 2))  # Half threads for inter-op
+    except RuntimeError:
+        # Already set or parallel work started, skip
+        pass
+    
+    # Intel CPU/OpenMP/BLAS optimizations for maximum parallelization (from old build)
+    # These are CPU-specific and should NOT be set for MPS/CUDA
+    os.environ['OMP_NUM_THREADS'] = str(num_threads)
+    os.environ['MKL_NUM_THREADS'] = str(num_threads)
+    os.environ['OPENBLAS_NUM_THREADS'] = str(num_threads)
+    os.environ['KMP_AFFINITY'] = 'granularity=fine,compact,1,0'  # Thread pinning
+    os.environ['KMP_BLOCKTIME'] = '0'  # Immediate thread release
+    
+    return num_threads
+
+def _setup_cpu_precision(precision='medium'):
+    """
+    Configure CPU matmul precision for speed optimization.
+    
+    IMPORTANT: Only applies to CPU. MPS/CUDA have their own precision handling.
+    
+    Args:
+        precision: 'medium' (faster, ~10% speedup) or 'high' (best quality)
+    """
+    import torch
+    if hasattr(torch, 'set_float32_matmul_precision') and precision == 'medium':
+        torch.set_float32_matmul_precision('medium')
+
+# ============================================================================
 # WORKER MODE - SHUTDOWN HANDLING
 # ============================================================================
 
@@ -317,12 +456,125 @@ def worker_mode():
     try:
         # Import heavy modules
         import torch
+        
+        # =============================================================================
+        # CRITICAL FIX: PyTorch 2.2.2 compatibility for audio-separator
+        # =============================================================================
+        # audio-separator library tries to use torch.amp.autocast_mode.is_autocast_available
+        # which doesn't exist in PyTorch 2.2.2. We need to add this attribute.
+        # =============================================================================
+        if not hasattr(torch.amp.autocast_mode, 'is_autocast_available'):
+            def _is_autocast_available(device_type=None):
+                """Check if autocast is available (CUDA or MPS)
+                
+                Args:
+                    device_type: Optional device type (ignored, kept for compatibility)
+                """
+                return torch.cuda.is_available() or (
+                    getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
+                )
+            torch.amp.autocast_mode.is_autocast_available = _is_autocast_available
+        
+        # =============================================================================
+        # CRITICAL FIX: Make ONNX optional for .pth models
+        # =============================================================================
+        # audio-separator imports onnxruntime at module level, but we only use .pth models
+        # Create a dummy onnxruntime module if it's not available
+        # =============================================================================
+        import sys
+        if 'onnxruntime' not in sys.modules:
+            try:
+                import onnxruntime
+            except ImportError:
+                # Create a dummy onnxruntime module for .pth models (ONNX not needed)
+                # audio-separator uses: import onnxruntime as ort
+                # Then: ort.InferenceSession(...) and ort.get_available_providers()
+                class DummyInferenceSession:
+                    """Dummy InferenceSession that raises error if used (ONNX models not supported)"""
+                    def __init__(self, *args, **kwargs):
+                        raise ImportError(
+                            "ONNX runtime not available. Only .pth models are supported. "
+                            "Install onnxruntime if you need ONNX model support."
+                        )
+                
+                def dummy_get_available_providers():
+                    """Return empty list - no ONNX providers available"""
+                    return []
+                
+                import types
+                dummy_ort = types.ModuleType('onnxruntime')
+                dummy_ort.InferenceSession = DummyInferenceSession
+                dummy_ort.get_available_providers = dummy_get_available_providers
+                sys.modules['onnxruntime'] = dummy_ort
+                print("[AudioSep] ONNX not available - using dummy module (OK for .pth models)", file=sys.stderr)
+        
+        # =============================================================================
+        # CRITICAL FIX: Make huggingface_hub optional for Apollo models
+        # =============================================================================
+        # Apollo's BaseModel uses PyTorchModelHubMixin from huggingface_hub, but we load
+        # models from local files, so huggingface_hub is not needed.
+        # Create a dummy PyTorchModelHubMixin if it's not available.
+        # =============================================================================
+        if 'huggingface_hub' not in sys.modules:
+            try:
+                from huggingface_hub import PyTorchModelHubMixin
+            except ImportError:
+                # Create a dummy PyTorchModelHubMixin for local model loading
+                # Apollo models are loaded from local .ckpt files, not from HuggingFace Hub
+                # The mixin is used in class definition: class BaseModel(nn.Module, PyTorchModelHubMixin, repo_url="...", pipeline_tag="...")
+                # We need to handle the __init_subclass__ method to accept keyword arguments
+                class DummyPyTorchModelHubMixin:
+                    """Dummy mixin that does nothing - models loaded from local files"""
+                    def __init_subclass__(cls, **kwargs):
+                        # Accept any keyword arguments (repo_url, pipeline_tag, etc.) but do nothing
+                        super().__init_subclass__()
+                
+                import types
+                dummy_hf = types.ModuleType('huggingface_hub')
+                dummy_hf.PyTorchModelHubMixin = DummyPyTorchModelHubMixin
+                sys.modules['huggingface_hub'] = dummy_hf
+                print("[AudioSep] HuggingFace Hub not available - using dummy module (OK for local Apollo models)", file=sys.stderr)
+        
         from audio_separator.separator import Separator
         
         # Device for use_autocast and VR speed opts (CUDA/MPS benefit from both)
+        # CRITICAL: Proper MPS detection (only on Apple Silicon, not Intel Mac)
+        def _should_use_mps():
+            """Check if MPS should actually be used (only on Apple Silicon)"""
+            import platform
+            import subprocess
+            if platform.machine() != 'arm64':
+                return False
+            try:
+                result = subprocess.run(['sysctl', '-n', 'machdep.cpu.brand_string'], 
+                                      capture_output=True, text=True, timeout=1)
+                if result.returncode == 0:
+                    cpu_brand = result.stdout.strip()
+                    if not any(x in cpu_brand for x in ['Apple', 'M1', 'M2', 'M3', 'M4']):
+                        return False
+            except:
+                return False
+            try:
+                if not (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()):
+                    return False
+                x = torch.randn(10, 10).to('mps')
+                _ = x * 2
+                torch.mps.synchronize()
+                return True
+            except:
+                return False
+        
         _device = "cuda" if torch.cuda.is_available() else (
-            "mps" if (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()) else "cpu"
+            "mps" if _should_use_mps() else "cpu"
         )
+        
+        # CRITICAL: Setup CPU threading optimizations BEFORE any computation
+        # This matches the optimizations in BS-RoFormer worker for maximum CPU performance
+        device_str = str(_device)
+        if device_str == "cpu":
+            _setup_cpu_threading(device_str)
+            _setup_cpu_precision('medium')  # ~10% speedup on CPU
+        
         _use_autocast = _device in ("cuda", "mps")
         _vr_params = {
             "batch_size": 1,
@@ -345,6 +597,21 @@ def worker_mode():
             vr_params=_vr_params,
         )
         
+        # CRITICAL: Re-apply CPU threading optimizations AFTER Separator init
+        # The Separator class may reset thread settings during initialization
+        if device_str == "cpu":
+            _setup_cpu_threading(device_str)
+            _setup_cpu_precision('medium')
+            # Verify threads are set correctly
+            if torch.get_num_threads() < get_physical_cores():
+                torch.set_num_threads(get_physical_cores())
+                # Don't try to set interop threads again - may fail if parallel work started
+                try:
+                    if torch.get_num_interop_threads() == 1:
+                        torch.set_num_interop_threads(max(2, get_physical_cores() // 2))
+                except RuntimeError:
+                    pass
+        
         send_json({"status": "ready", "message": "Worker ready"})
         
     except Exception as e:
@@ -353,7 +620,7 @@ def worker_mode():
     
     def _handle_one(job, emit):
         """Run a single job (load_model, load_apollo, separate, apollo, get_status, set_storage_type). Use emit instead of send_json."""
-        nonlocal current_model, apollo_model_path, apollo_model, apollo_device
+        nonlocal current_model, apollo_model_path, apollo_model, apollo_device, _device
         cmd = job.get("cmd", "")
         if cmd == "load_model":
             model_name = job.get("model")
@@ -382,9 +649,16 @@ def worker_mode():
             try:
                 emit({"status": "loading_model", "model": os.path.basename(model_path)})
                 import torch
+                import platform
                 from apollo.apollo_separator import get_device, get_model_config, load_checkpoint
                 from apollo.look2hear.models.apollo import Apollo
-                device = get_device()
+                # CRITICAL: Apollo doesn't work well with MPS on Intel Mac (FFT operations not supported)
+                # Force CPU on Intel Mac, use get_device() only on Apple Silicon
+                if platform.machine() == 'arm64':
+                    device = get_device()
+                else:
+                    # Intel Mac: force CPU (MPS FFT operations not supported)
+                    device = torch.device('cpu')
                 if config_path and os.path.exists(config_path):
                     try:
                         from omegaconf import OmegaConf
@@ -469,6 +743,22 @@ def worker_mode():
                             "split_bin": mp["band"][1]["crop_stop"],
                             "aggr_correction": mp.get("aggr_correction"),
                         }
+                # CRITICAL: Re-apply CPU threading optimizations right before separation
+                # This ensures maximum CPU utilization during the actual computation
+                if _device == "cpu":
+                    import torch  # Ensure torch is imported in this scope
+                    _setup_cpu_threading("cpu")
+                    _setup_cpu_precision('medium')
+                    # Force thread count to physical cores for maximum performance
+                    num_threads = get_physical_cores()
+                    torch.set_num_threads(num_threads)
+                    # Don't try to set interop threads - may fail if parallel work started
+                    try:
+                        if torch.get_num_interop_threads() == 1:
+                            torch.set_num_interop_threads(max(2, num_threads // 2))
+                    except RuntimeError:
+                        pass
+                
                 if single_stem:
                     output_files = separator.separate(input_path, primary_stem=single_stem)
                 else:
@@ -557,8 +847,21 @@ def worker_mode():
     # Main job loop
     while not _shutdown_requested.is_set():
         try:
+            # Check if stdin is closed before reading (prevents busy loop)
+            if sys.stdin.closed:
+                break
+            
+            # Use select with timeout to avoid blocking indefinitely
+            # This allows the shutdown flag to be checked periodically
+            if sys.platform != "win32":
+                readable, _, _ = select.select([sys.stdin], [], [], 0.5)
+                if not readable:
+                    # No input available, check shutdown flag and continue
+                    continue
+            
             line = sys.stdin.readline()
             if not line:
+                # EOF or stdin closed
                 break
             line = line.strip()
             if not line:

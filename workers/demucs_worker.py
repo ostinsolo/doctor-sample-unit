@@ -212,16 +212,27 @@ def _save_audio_demucs_or_fallback(wav, path, samplerate, clip="rescale", bits_p
     Use Demucs save_audio (torchaudio) when possible. If torchcodec is missing
     and torchaudio.save fails, fall back to soundfile with prevent_clip + PCM_16
     so behavior matches Demucs and avoids crackling.
+    
+    Note: torchaudio.save() requires tensors to be on CPU, so we move them
+    to CPU before saving (especially important for MPS/CUDA devices).
     """
     from demucs.audio import save_audio, prevent_clip
+    import torch
+
+    # torchaudio.save() requires tensors to be on CPU
+    # Move to CPU if on GPU/MPS device
+    if wav.device.type != "cpu":
+        wav = wav.cpu()
 
     try:
         save_audio(wav, path, samplerate=samplerate, clip=clip, bits_per_sample=bits_per_sample, **kwargs)
         return
     except Exception as e:
         err = str(e).lower()
-        if "torchcodec" not in err and "module" not in err:
+        # Catch torchcodec/module errors and CPU requirement errors
+        if "torchcodec" not in err and "module" not in err and "cpu" not in err:
             raise
+    # Fallback to soundfile
     import soundfile as sf
     wav = prevent_clip(wav, mode=clip)
     data = wav.detach().cpu().numpy()
@@ -486,9 +497,35 @@ def worker_mode():
         from demucs.apply import apply_model
         
         # Determine device
+        # CRITICAL: Proper MPS detection (only on Apple Silicon, not Intel Mac)
+        def _should_use_mps():
+            """Check if MPS should actually be used (only on Apple Silicon)"""
+            import platform
+            import subprocess
+            if platform.machine() != 'arm64':
+                return False
+            try:
+                result = subprocess.run(['sysctl', '-n', 'machdep.cpu.brand_string'], 
+                                      capture_output=True, text=True, timeout=1)
+                if result.returncode == 0:
+                    cpu_brand = result.stdout.strip()
+                    if not any(x in cpu_brand for x in ['Apple', 'M1', 'M2', 'M3', 'M4']):
+                        return False
+            except:
+                return False
+            try:
+                if not (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()):
+                    return False
+                x = torch.randn(10, 10).to('mps')
+                _ = x * 2
+                torch.mps.synchronize()
+                return True
+            except:
+                return False
+        
         if torch.cuda.is_available():
             device = torch.device('cuda')
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        elif _should_use_mps():
             device = torch.device('mps')
         else:
             device = torch.device('cpu')
@@ -555,6 +592,18 @@ def worker_mode():
     # Main job loop - checks shutdown flag
     while not _shutdown_requested.is_set():
         try:
+            # Check if stdin is closed before reading (prevents busy loop)
+            if sys.stdin.closed:
+                break
+            
+            # Use select with timeout to avoid blocking indefinitely
+            # This allows the shutdown flag to be checked periodically
+            if sys.platform != "win32":
+                readable, _, _ = select.select([sys.stdin], [], [], 0.5)
+                if not readable:
+                    # No input available, check shutdown flag and continue
+                    continue
+            
             line = sys.stdin.readline()
             if not line:
                 # EOF - stdin closed (parent died)
