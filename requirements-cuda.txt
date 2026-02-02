@@ -32,9 +32,9 @@ pydub>=0.25.0
 scipy>=1.10.0
 resampy>=0.4.0
 
-# Demucs (torchaudio.save uses torchcodec for WAV encode/decode; needs FFmpeg in PATH)
+# Demucs (workers use soundfile for I/O; torchcodec has no Windows wheels on PyPI)
 demucs>=4.0.0
-torchcodec>=0.5
+# torchcodec>=0.5  # Linux/macOS only - no win_amd64 wheels; workers fall back to soundfile
 
 # -----------------------------------------------------------------------------
 # ONNX (GPU version for MDX models)
