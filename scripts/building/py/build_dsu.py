@@ -333,6 +333,10 @@ def build_dsu():
     configs_path = os.path.join(PROJECT_ROOT, "configs")
     if os.path.exists(configs_path):
         include_files.append((configs_path, "configs"))
+    # models.json for BS-RoFormer worker (registry; weights/ downloaded separately)
+    models_json = os.path.join(PROJECT_ROOT, "models.json")
+    if os.path.exists(models_json):
+        include_files.append((models_json, "models.json"))
     
     # =============================================================================
     # CRITICAL BUILD OPTIONS - from working builds

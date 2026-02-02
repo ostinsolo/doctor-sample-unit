@@ -535,6 +535,47 @@ def worker_mode():
                 sys.modules['huggingface_hub'] = dummy_hf
                 print("[AudioSep] HuggingFace Hub not available - using dummy module (OK for local Apollo models)", file=sys.stderr)
         
+        # =============================================================================
+        # CRITICAL FIX: Make pytorch_lightning optional for inference
+        # =============================================================================
+        # Bandit/MDX23c models and apollo/look2hear import pytorch_lightning at module level.
+        # We only need inference - create a minimal dummy so those imports succeed.
+        # =============================================================================
+        if 'pytorch_lightning' not in sys.modules:
+            try:
+                import pytorch_lightning
+            except ImportError:
+                import types
+                from typing import Optional, Any
+                # Minimal LightningModule for inference (just nn.Module)
+                class DummyLightningModule(torch.nn.Module):
+                    """Dummy LightningModule - inference only, no training"""
+                    pass
+                def _rank_zero_only(f):
+                    return f
+                dummy_pl = types.ModuleType('pytorch_lightning')
+                dummy_pl.__version__ = '0.0.0-dummy'
+                dummy_pl.LightningModule = DummyLightningModule
+                dummy_utils = types.ModuleType('pytorch_lightning.utilities')
+                dummy_utils.rank_zero_only = _rank_zero_only
+                dummy_types = types.ModuleType('pytorch_lightning.utilities.types')
+                dummy_types.STEP_OUTPUT = Optional[Any]
+                dummy_utils.types = dummy_types
+                dummy_pl.utilities = dummy_utils
+                dummy_callbacks = types.ModuleType('pytorch_lightning.callbacks')
+                dummy_progress = types.ModuleType('pytorch_lightning.callbacks.progress')
+                dummy_rich = types.ModuleType('pytorch_lightning.callbacks.progress.rich_progress')
+                dummy_progress.rich_progress = dummy_rich
+                dummy_callbacks.progress = dummy_progress
+                dummy_pl.callbacks = dummy_callbacks
+                sys.modules['pytorch_lightning'] = dummy_pl
+                sys.modules['pytorch_lightning.utilities'] = dummy_utils
+                sys.modules['pytorch_lightning.utilities.types'] = dummy_types
+                sys.modules['pytorch_lightning.callbacks'] = dummy_callbacks
+                sys.modules['pytorch_lightning.callbacks.progress'] = dummy_progress
+                sys.modules['pytorch_lightning.callbacks.progress.rich_progress'] = dummy_rich
+                print("[AudioSep] PyTorch Lightning not available - using dummy module (OK for inference)", file=sys.stderr)
+        
         from audio_separator.separator import Separator
         
         # Device for use_autocast and VR speed opts (CUDA/MPS benefit from both)

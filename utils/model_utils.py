@@ -28,8 +28,24 @@ def _loralib_status():
 
 # from .muon import Muon, AdaGO  # Optional for training
 import torch.distributed as dist
+from contextlib import nullcontext
 
 _loralib_status()
+
+
+def _autocast_context(device, use_amp):
+    """
+    Return autocast context for the given device.
+    - CUDA: torch.amp.autocast(device_type="cuda") for mixed precision (fixes deprecation)
+    - MPS: nullcontext (autocast not properly supported per PyTorch #88415)
+    - CPU: nullcontext (no autocast)
+    """
+    if not use_amp:
+        return nullcontext()
+    device_type = device.type if isinstance(device, torch.device) else str(device)
+    if device_type == "cuda":
+        return torch.amp.autocast(device_type="cuda", enabled=True)
+    return nullcontext()
 
 
 def _require_loralib() -> None:
@@ -107,12 +123,11 @@ def demix(
     batch_size = config.inference.batch_size
 
     use_amp = getattr(config.training, 'use_amp', True)
-    
-    # OPTIMIZATION: Use torch.cuda.amp.autocast like old build
-    # On CPU, this is a no-op (does nothing, zero overhead)
-    # On CUDA/MPS, it enables mixed precision
-    # This matches the old build's approach exactly
-    with torch.cuda.amp.autocast(enabled=use_amp):
+
+    # OPTIMIZATION: Use torch.amp.autocast for CUDA only (fixes deprecation warning)
+    # MPS: autocast not properly supported (PyTorch #88415), skip to avoid "Disabling autocast" warning
+    # CPU: no autocast
+    with _autocast_context(device, use_amp):
         with torch.inference_mode():
             # Initialize result and counter tensors
             req_shape = (num_instruments,) + mix.shape
@@ -291,12 +306,11 @@ def demix_fast(
     windows = torch.stack(windows)  # (num_chunks, chunk_size)
     
     use_amp = getattr(config.training, 'use_amp', True)
-    
-    # OPTIMIZATION: Use torch.cuda.amp.autocast like old build
-    # On CPU, this is a no-op (does nothing, zero overhead)
-    # On CUDA/MPS, it enables mixed precision
-    # This matches the old build's approach exactly
-    with torch.cuda.amp.autocast(enabled=use_amp):
+
+    # OPTIMIZATION: Use torch.amp.autocast for CUDA only (fixes deprecation warning)
+    # MPS: autocast not properly supported (PyTorch #88415), skip to avoid "Disabling autocast" warning
+    # CPU: no autocast
+    with _autocast_context(device, use_amp):
         with torch.inference_mode():
             # Initialize result and counter tensors
             # OPTIMIZATION: For CPU, keep on CPU (matches old build performance)

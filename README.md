@@ -327,28 +327,28 @@ pip install -r requirements-cuda.txt
 
 REM Build
 python setup.py build_exe
-REM or
-python build_dsu.py
+REM or (from project root)
+python scripts\building\py\build_dsu.py
 
-REM Output in dist/dsu/
+REM Output in scripts\building\py\dist\dsu\
 ```
 
 ### macOS Apple Silicon (MPS)
 
 ```bash
 # Setup runtime + deps (PyTorch 2.10, MPS)
-./setup_local_mac.sh -y
+./scripts/setup/setup_local_mac.sh -y
 
 # Optional: freeze executables
-./build_manual_mac.sh
-# Output: dist/dsu/dsu-demucs, dsu-bsroformer, dsu-audio-separator (no .exe)
+./scripts/building/sh/build_manual_mac.sh
+# Output: scripts/building/py/dist/dsu/dsu-demucs, dsu-bsroformer, dsu-audio-separator (no .exe)
 
 # Benchmarks (4s / 40s test audio)
 ./tests/run_benchmarks_mac.sh
 ./tests/run_benchmarks_mac.sh 40
 ```
 
-See `build_runtime_mac_mps.sh`, `build_manual_mac.sh`, and `tests/README.md`.  
+See `scripts/building/sh/build_runtime_mac_mps.sh`, `scripts/building/sh/build_manual_mac.sh`, and `tests/README.md`.  
 **Mac ARM + VR separation**: If you see `libsamplerate.dylib` "incompatible architecture (have 'x86_64', need 'arm64')", run `pip install 'samplerate>=0.2.3' --force-reinstall` after installing deps. See **`docs/LIBSAMPLERATE_MAC_ARM.md`**.
 
 ### Manual Build Script (Windows)

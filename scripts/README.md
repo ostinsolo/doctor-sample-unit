@@ -6,7 +6,7 @@ This directory contains all build, setup, utility, and CI scripts organized by t
 
 ```
 scripts/
-├── build/           # Build scripts
+├── building/       # Build scripts
 │   ├── sh/         # Shell build scripts (macOS/Linux)
 │   ├── bat/        # Batch build scripts (Windows)
 │   └── py/         # Python build scripts
@@ -18,7 +18,7 @@ scripts/
 
 ## Build Scripts
 
-### Shell Scripts (`build/sh/`)
+### Shell Scripts (`building/sh/`)
 
 - **`build.sh`** - Main build script (platform-agnostic)
 - **`build-intel.sh`** - Intel Mac specific build
@@ -26,12 +26,12 @@ scripts/
 - **`build_runtime_mac_intel.sh`** - Build runtime for Intel Mac
 - **`build_runtime_mac_mps.sh`** - Build runtime for Mac MPS (ARM)
 
-### Batch Scripts (`build/bat/`)
+### Batch Scripts (`building/bat/`)
 
 - **`build_manual.bat`** - Manual Windows build script
 - **`build_runtime.bat`** - Build runtime for Windows
 
-### Python Scripts (`build/py/`)
+### Python Scripts (`building/py/`)
 
 - **`build_dsu.py`** - Main DSU build script (cx_Freeze)
 - **`build_dsu_launchers.py`** - Build launcher executables
@@ -45,13 +45,15 @@ scripts/
 
 - **`check_demucs_save.py`** - Check Demucs save functionality
 - **`check_wav.py`** - Check WAV file utilities
-- **`profile_worker.py`** - Profile worker performance
+- **`profile_worker.py`** - Profile BS-RoFormer worker (legacy, hardcoded paths)
+- **`profile_bsroformer.py`** - Profile BS-RoFormer cold separation (phase timings + cProfile)
+- **`profile_demucs.py`** - Profile Demucs cold separation (phase timings + cProfile)
 
 ## CI Scripts (`ci/`)
 
 - **`test_build_env.bat`** - Test build environment on Windows
 - **`simulate_ci_mac_arm.sh`** - Simulate CI on Mac ARM
-- **`simulate_ci_real_audio.py`** - Simulate CI with real audio
+- **`simulate_ci_demucs.py`** - Smoke test for frozen dsu-demucs
 
 ## Other Scripts
 
@@ -63,7 +65,7 @@ scripts/
 
 **Mac/Linux:**
 ```bash
-cd scripts/build/sh
+cd scripts/building/sh
 ./build.sh
 ./build-intel.sh
 ./build_runtime_mac_intel.sh
@@ -71,16 +73,15 @@ cd scripts/build/sh
 
 **Windows:**
 ```cmd
-cd scripts\build\bat
+cd scripts\building\bat
 build_manual.bat
 build_runtime.bat
 ```
 
-**Python (all platforms):**
+**Python (all platforms, run from project root):**
 ```bash
-cd scripts/build/py
-python build_dsu.py
-python build_dsu_launchers.py
+python scripts/building/py/build_dsu.py
+python scripts/building/py/build_dsu_launchers.py
 ```
 
 ### Setup
@@ -100,9 +101,11 @@ setup_build_env.bat
 ### Utilities
 
 ```bash
-cd scripts/utils
-python check_wav.py
-python profile_worker.py
+# From project root
+python scripts/utils/check_wav.py
+python scripts/utils/profile_worker.py
+python scripts/utils/profile_bsroformer.py --wav tests/audio/test_4s.wav --models-dir /path/to/models --cprofile
+python scripts/utils/profile_demucs.py --wav tests/audio/test_4s.wav --cprofile
 ```
 
 ## Notes

@@ -147,6 +147,16 @@ def _set_thread_env_early():
 _set_thread_env_early()
 
 # ============================================================================
+# PATCH: Fix deprecated torch.cuda.amp.autocast for deps (rotary_embedding_torch)
+# Only when CUDA is available - do NOT patch on CPU/MPS to avoid changing behavior
+# ============================================================================
+import torch
+if torch.cuda.is_available() and hasattr(torch, 'amp') and hasattr(torch.amp, 'autocast'):
+    def _patched_cuda_autocast(enabled=True, dtype=torch.float16, cache_enabled=True):
+        return torch.amp.autocast(device_type="cuda", enabled=enabled, dtype=dtype, cache_enabled=cache_enabled)
+    torch.cuda.amp.autocast = _patched_cuda_autocast
+
+# ============================================================================
 # HELPER: Proper MPS detection (only on Apple Silicon, not Intel Mac)
 # ============================================================================
 def _should_use_mps():
@@ -1229,6 +1239,39 @@ def inference_cli():
         utils_path = getattr(utils_mod, "__file__", "") or ""
         if "shared_runtime" not in utils_path:
             del sys.modules["utils"]
+    # Dummy pytorch_lightning for Bandit models (optional dep, inference only)
+    if "pytorch_lightning" not in sys.modules:
+        try:
+            import pytorch_lightning
+        except ImportError:
+            import types
+            from typing import Optional, Any
+            import torch.nn as nn
+            class DummyLightningModule(nn.Module):
+                pass
+            def _rank_zero_only(f):
+                return f
+            dummy_pl = types.ModuleType('pytorch_lightning')
+            dummy_pl.__version__ = '0.0.0-dummy'
+            dummy_pl.LightningModule = DummyLightningModule
+            dummy_utils = types.ModuleType('pytorch_lightning.utilities')
+            dummy_utils.rank_zero_only = _rank_zero_only
+            dummy_types = types.ModuleType('pytorch_lightning.utilities.types')
+            dummy_types.STEP_OUTPUT = Optional[Any]
+            dummy_utils.types = dummy_types
+            dummy_pl.utilities = dummy_utils
+            dummy_callbacks = types.ModuleType('pytorch_lightning.callbacks')
+            dummy_progress = types.ModuleType('pytorch_lightning.callbacks.progress')
+            dummy_rich = types.ModuleType('pytorch_lightning.callbacks.progress.rich_progress')
+            dummy_progress.rich_progress = dummy_rich
+            dummy_callbacks.progress = dummy_progress
+            dummy_pl.callbacks = dummy_callbacks
+            sys.modules['pytorch_lightning'] = dummy_pl
+            sys.modules['pytorch_lightning.utilities'] = dummy_utils
+            sys.modules['pytorch_lightning.utilities.types'] = dummy_types
+            sys.modules['pytorch_lightning.callbacks'] = dummy_callbacks
+            sys.modules['pytorch_lightning.callbacks.progress'] = dummy_progress
+            sys.modules['pytorch_lightning.callbacks.progress.rich_progress'] = dummy_rich
     from utils.settings import parse_args_inference
     args = parse_args_inference(None)
     args.threads = extra_args.threads
@@ -1672,7 +1715,7 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                 batch_size = job.get("batch_size")
                 pcm_type = job.get("pcm_type", "FLOAT")
                 two_stems = job.get("two_stems")
-                use_fast = job.get("use_fast", False)
+                use_fast = job.get("use_fast", True)  # Default True for best performance (demix_fast)
                 
                 if not input_path:
                     send_json({"status": "error", "message": "No input file specified"})
@@ -1739,7 +1782,6 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                             # CRITICAL: Re-apply threading IMMEDIATELY after model.to()
                             # model.to() may trigger initialization that resets thread settings
                             if device_str == "cpu":
-                                import torch
                                 num_threads = get_physical_cores()
                                 torch.set_num_threads(num_threads)
                                 os.environ['OMP_NUM_THREADS'] = str(num_threads)
@@ -1791,20 +1833,15 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                 try:
                     # CRITICAL: Re-apply threading settings before separation
                     # Model loading/to() may reset thread settings, so we MUST re-apply here
-                    # This matches the original main.py which sets threading ONCE at start, but we re-apply
-                    # because model loading might have reset it
                     if device_str == "cpu":
                         import torch
                         num_threads = get_physical_cores()
-                        # Re-apply PyTorch thread settings (CRITICAL for multi-core performance)
                         torch.set_num_threads(num_threads)
-                        # Re-apply environment variables (safe to do anytime)
                         os.environ['OMP_NUM_THREADS'] = str(num_threads)
                         os.environ['MKL_NUM_THREADS'] = str(num_threads)
                         os.environ['OPENBLAS_NUM_THREADS'] = str(num_threads)
                         os.environ['KMP_AFFINITY'] = 'granularity=fine,compact,1,0'
                         os.environ['KMP_BLOCKTIME'] = '0'
-                        # Re-apply 'medium' precision for best performance
                         _setup_cpu_precision('medium')
                     
                     # Now call separation - this matches original main.py flow
@@ -1926,7 +1963,6 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                         new_model, new_config, new_info = load_model_impl(model_name, models_dir)
                     
                     new_model = new_model.to(torch_device)
-                    
                     # Add to cache (but don't make it the active model)
                     add_to_cache(load_identifier, (new_model, new_config, new_info))
                     

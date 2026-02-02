@@ -67,7 +67,7 @@ six>=1.16.0
 pyyaml>=6.0
 omegaconf>=2.3.0
 # huggingface-hub>=0.20.0  # REMOVED: Not needed - Apollo models load from local files, dummy module provided
-pytorch-lightning>=2.0.0
+# pytorch-lightning>=2.0.0  # REMOVED: Training only, not needed for inference
 ml-collections>=0.1.0
 matplotlib
 

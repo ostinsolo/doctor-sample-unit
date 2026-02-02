@@ -68,6 +68,7 @@ jobs:
         run: |
           $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
           uv pip install --system -r requirements-cuda.txt
+          uv pip install --system audio-separator==0.41.0 --no-deps
 
       - name: Build DSU
         run: python scripts/building/py/build_dsu.py
@@ -140,6 +141,7 @@ jobs:
         run: |
           $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
           uv pip install --system -r requirements-cpu.txt
+          uv pip install --system audio-separator==0.41.0 --no-deps
 
       - name: Build DSU
         run: python scripts/building/py/build_dsu.py
@@ -204,6 +206,7 @@ jobs:
           uv venv
           source .venv/bin/activate
           uv pip install -r requirements-mac-mps.txt
+          uv pip install audio-separator==0.41.0 --no-deps
           # Mac ARM: samplerate 0.1.0 ships x86_64-only libsamplerate.dylib; use 0.2.3+ (universal2, no dylib)
           uv pip install 'samplerate>=0.2.3' --force-reinstall
 

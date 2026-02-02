@@ -22,8 +22,8 @@ numpy>=2.0.0
 
 # -----------------------------------------------------------------------------
 # Audio Processing Core
+# audio-separator: installed separately with --no-deps (lighter, no onnx/huggingface)
 # -----------------------------------------------------------------------------
-audio-separator==0.41.0
 librosa>=0.10.0
 soundfile>=0.12.0
 samplerate==0.1.0
@@ -36,11 +36,11 @@ demucs>=4.0.0
 # torchcodec>=0.5  # Linux/macOS only - no win_amd64 wheels; workers fall back to soundfile
 
 # -----------------------------------------------------------------------------
-# ONNX (CPU version)
+# ONNX - REMOVED: Dummy module in audio_separator_worker handles .pth-only models
 # -----------------------------------------------------------------------------
-onnx>=1.14.0
-onnx2torch>=1.5.0
-onnxruntime>=1.16.0
+# onnx>=1.14.0
+# onnx2torch>=1.5.0
+# onnxruntime>=1.16.0
 
 # -----------------------------------------------------------------------------
 # Model Dependencies
@@ -71,8 +71,8 @@ tqdm>=4.65.0
 six>=1.16.0
 pyyaml>=6.0
 omegaconf>=2.3.0
-huggingface-hub>=0.20.0
-pytorch-lightning>=2.0.0
+# huggingface-hub>=0.20.0  # REMOVED: Dummy module for Apollo local models
+# pytorch-lightning>=2.0.0  # REMOVED: Training only, not needed for inference
 ml-collections>=0.1.0
 matplotlib
 

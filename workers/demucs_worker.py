@@ -209,37 +209,33 @@ def _load_track_safe(path, audio_channels, samplerate):
 
 def _save_audio_demucs_or_fallback(wav, path, samplerate, clip="rescale", bits_per_sample=16, **kwargs):
     """
-    Use Demucs save_audio (torchaudio) when possible. If torchcodec is missing
-    and torchaudio.save fails, fall back to soundfile with prevent_clip + PCM_16
-    so behavior matches Demucs and avoids crackling.
-    
-    Note: torchaudio.save() requires tensors to be on CPU, so we move them
-    to CPU before saving (especially important for MPS/CUDA devices).
+    Save audio via TorchCodec (torchaudio.save). For WAV we call torchaudio.save
+    without encoding/bits_per_sample so TorchCodec does not warn (it uses file
+    extension for format; FFmpeg chooses default WAV encoding). For .mp3/.flac
+    we use Demucs save_audio. Uses Demucs prevent_clip so behavior matches CLI.
     """
-    from demucs.audio import save_audio, prevent_clip
+    from pathlib import Path
+    from demucs.audio import prevent_clip
     import torch
 
-    # torchaudio.save() requires tensors to be on CPU
-    # Move to CPU if on GPU/MPS device
+    path = Path(path)
+    suffix = path.suffix.lower()
+
     if wav.device.type != "cpu":
         wav = wav.cpu()
 
-    try:
-        save_audio(wav, path, samplerate=samplerate, clip=clip, bits_per_sample=bits_per_sample, **kwargs)
+    # WAV: use torchaudio.save with only sample_rate so TorchCodec is used
+    # without encoding/bits_per_sample (TorchCodec doesn't support them and warns;
+    # format is determined by .wav extension, FFmpeg uses default PCM).
+    if suffix == ".wav":
+        wav = prevent_clip(wav, mode=clip)
+        import torchaudio
+        torchaudio.save(str(path), wav, sample_rate=samplerate)
         return
-    except Exception as e:
-        err = str(e).lower()
-        # Catch torchcodec/module errors and CPU requirement errors
-        if "torchcodec" not in err and "module" not in err and "cpu" not in err:
-            raise
-    # Fallback to soundfile
-    import soundfile as sf
-    wav = prevent_clip(wav, mode=clip)
-    data = wav.detach().cpu().numpy()
-    if data.ndim == 2:
-        data = data.T
-    subtype = {16: "PCM_16", 24: "PCM_24", 32: "PCM_32"}.get(bits_per_sample, "PCM_16")
-    sf.write(str(path), data, samplerate, subtype=subtype)
+
+    # .mp3 / .flac: use Demucs save_audio (does prevent_clip and passes encoding/bits_per_sample)
+    from demucs.audio import save_audio
+    save_audio(wav, path, samplerate=samplerate, clip=clip, bits_per_sample=bits_per_sample, **kwargs)
 
 
 def _patch_cli_save_audio_to_soundfile():
@@ -463,6 +459,7 @@ def worker_mode():
     Protocol:
         Input (one JSON per line):
             {"cmd": "separate", "input": "/path/to/audio.wav", "output": "/output/", "model": "htdemucs_ft", ...}
+            (use "output" or "output_dir" for the output directory)
             {"cmd": "load_model", "model": "htdemucs_ft"}
             {"cmd": "list_models"}
             {"cmd": "exit"}
@@ -689,7 +686,7 @@ def worker_mode():
             
             elif cmd == "separate":
                 input_path = job.get("input")
-                output_dir = job.get("output", "output")
+                output_dir = job.get("output_dir") or job.get("output", "output")
                 model_name = job.get("model")
                 repo_path = job.get("repo")  # Optional: path to custom model repo
                 two_stems = job.get("two_stems")  # e.g., "vocals" for vocals + no_vocals

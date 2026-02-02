@@ -177,6 +177,7 @@ From `tests/run_benchmarks_mac.sh` / `benchmark_worker_e2e.py`:
 |--------|-------|------------|-----------------|-----------------|
 | Demucs htdemucs | ~0.64s | ~0.19s | ~0.9s | ~0.43s |
 | BS-RoFormer bsrofo_sw | ~0.73s | ~18.5s | ~10.2s | ~4.3s |
+| Audio-Separator VR (5_HP-Karaoke-UVR) | - | - | ~5.5s | - |
 
 Mac uses **PyTorch 2.10**; MPS backend. Models dir: `~/Documents/DSU/ThirdPartyApps/Models` (or `DSU_MODELS`).
 
@@ -200,6 +201,44 @@ We use **MPS** for all Mac ARM architectures (Demucs, BS-RoFormer, Audio-Separat
 **Implementation:** We explicitly select MPS when available (`get_device()` in Apollo, device selection in Demucs / Audio-Separator workers: CUDA → MPS → CPU) and use `torch.autocast(device_type="mps")` where it helps (e.g. Audio-Separator VR).
 
 **Summary:** We already use native PyTorch MPS ops for our architectures. No extra dependencies are required. Remaining CPU use is mainly the optional STFT/ISTFT fallback in dependencies; that could be revisited as PyTorch MPS support evolves.
+
+### Checking GPU utilization (BS-RoFormer)
+
+On **CUDA**, BS-RoFormer is designed for high GPU use and should show high GPU utilization during separation:
+
+- **Model and data on GPU:** The worker moves the model and input chunks to `cuda`; `demix_fast` keeps `result` and `counter` on device and does a single `.cpu()` only at the end. Chunks are processed in batches on GPU.
+- **STFT / ISTFT on GPU:** In the BS-RoFormer model code, when the device is CUDA (`x_is_mps` is false), `torch.stft` and `torch.istft` run on GPU (no CPU fallback).
+- **Attention on GPU:** Attention uses PyTorch SDP (flash or mem-efficient when available) on CUDA. The heavy work (band_split, transformer blocks, mask estimation, STFT/ISTFT) all runs on GPU.
+
+**How to verify (Windows / Linux with NVIDIA GPU):**
+
+1. Start the worker with CUDA:  
+   `dsu-bsroformer.exe --worker --models-dir <path> --device cuda`  
+   Confirm the ready message includes `"device": "cuda"`.
+2. In a second terminal, poll GPU usage while a separation runs:  
+   `nvidia-smi -l 1`  
+   (or `nvidia-smi` repeatedly).
+3. During separation you should see:
+   - **GPU-Util** high (often 80–100%) while the model is running.
+   - **Memory-Usage** high and stable (model + activations on GPU).
+
+If GPU-Util stays low on CUDA, check: (1) the worker really reports `"device": "cuda"`, (2) you are not bottlenecked by very short audio or batch size 1 with tiny chunks, (3) no other process is starving the GPU.
+
+**MPS (Mac ARM):** In the BS-RoFormer model code, when the device is MPS, STFT/ISTFT and some scatter/mask ops use CPU fallbacks (`x_is_mps` path) for compatibility. The transformer and attention still run on MPS, so GPU (Metal) utilization can be high for that part, but overall utilization may be lower than on CUDA because of the CPU STFT/ISTFT work. This is a known trade-off; moving more of that path to MPS would require testing on macOS 14+ and PyTorch 2.10.
+
+### CPU multithreading (BS-RoFormer on CPU)
+
+When running with `--device cpu`, the worker sets PyTorch and OpenMP/BLAS threading to use **physical core count** (`get_physical_cores()`): `torch.set_num_threads`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, plus `KMP_AFFINITY` / `KMP_BLOCKTIME` for Intel-style pinning. So during separation you should see **high multi-core CPU usage** in Activity Monitor (macOS) or Task Manager (Windows)—e.g. **600–800% CPU** (6–8 cores) on an 8-core machine. That indicates the worker is using CPU power well with multithreading.
+
+### Verifying MPS usage (Mac ARM)
+
+To confirm you are using MPS well on Mac:
+
+1. **Worker reports MPS:** Start the worker with `--device mps` (or let it auto-detect on ARM). The ready message should include `"device": "mps"` and `"threads": <N>` (physical cores, used when CPU fallbacks run).
+2. **Activity Monitor:** Open **Activity Monitor** → **Window** → **GPU History**. Run a separation (e.g. BS-RoFormer on a 4s file). You should see **GPU** activity during the run; the main model (transformer, attention) runs on Metal/MPS.
+3. **Validation reports:** Reports under `tests/validation_output/` (e.g. `mps_timing_after.json`) can show `"mps_ops": true` and timings per model—confirming MPS paths are active and giving you good throughput (e.g. ~0.46–0.77s per 4s clip for BSRoformer / MelBand models in the repo’s validation runs).
+
+So you can both see **high CPU usage (600–800%)** when on CPU and **good MPS usage** on Mac when on `--device mps`, with GPU History and report fields as proof.
 
 ### Optimization Strategies
 
@@ -269,6 +308,30 @@ All benchmarks performed with mmap optimization enabled (Jan 2026).
 
 **Conclusion**: Idle workers consume resources. Use single worker for best performance.
 
+#### Per-process restart vs persistent worker (CPU / MPS)
+
+The benchmarks above (single worker vs start/stop) were measured in a **persistent-worker** setup (CUDA/MPS, model cached). On **CPU**, user testing showed that **starting and restarting the worker per process** can be faster than keeping a persistent worker in some setups.
+
+**How CPU “per-process restart” works:**
+
+1. Spawn worker process (e.g. `dsu-bsroformer --worker --device cpu`).
+2. Send one job (e.g. `{"cmd": "separate", ...}`).
+3. Wait for `{"status": "done"}`.
+4. Send `{"cmd": "exit"}`, wait for process exit.
+5. For the next job, go to step 1 (spawn a fresh worker).
+
+So each job runs in a **new process**: no model kept in memory between jobs. This can be faster on CPU when the cost of keeping the process alive (threading, MKL/BLAS state, memory) or warm-up effects outweigh the cost of a fresh startup + load + one separation.
+
+**When to consider per-process restart (CPU):**
+
+- Single or sparse jobs (one separation, then long idle).
+- Memory or stability issues with a long-lived process.
+- You observe that “one job then exit” is faster than “keep worker, same model cached” in your own benchmarks.
+
+**MPS (Mac ARM):** The same comparison (per-process restart vs persistent worker) has not yet been fully benchmarked on MPS. If you run it, use the same pattern: spawn worker with `--device mps`, one `separate`, `exit`, respawn for the next job; compare total time to one persistent worker doing the same sequence. Results can be added here (e.g. “MPS: per-process restart vs persistent, 4s input, bsrofo_sw: …”).
+
+**Recommendation:** On **GPU (CUDA/MPS)**, keep one worker alive and reuse it (model cached). On **CPU**, measure both strategies for your workload; prefer per-process restart if it is faster in your tests.
+
 #### Per-Operation with Different Configurations
 
 | Operation | 3 Workers Running | 1 Worker Only | Improvement |
@@ -312,10 +375,70 @@ All benchmarks performed with mmap optimization enabled (Jan 2026).
 Based on benchmarks:
 
 1. **Start 1 worker** (not all 3) - saves resources
-2. **Keep worker alive** - model stays cached
+2. **Keep worker alive** - model stays cached (best on GPU/CUDA/MPS)
 3. **Same model = instant** (~0.6s)
 4. **Model switch = 1-4s** - acceptable for different operations
 5. **Group by model** when processing multiple files
+6. **On CPU:** In some setups, **per-process restart** (spawn → one job → exit → respawn) can be faster than a persistent worker. See [Per-process restart vs persistent worker (CPU / MPS)](#per-process-restart-vs-persistent-worker-cpu--mps). Benchmark both for your workload.
+
+### Reducing timing further (even 10+ seconds)
+
+To shave more time off separation and model load:
+
+1. **Larger `batch_size` in the JSON job (BS-RoFormer)**  
+   Pass `"batch_size": 4` or `"batch_size": 8` in your `separate` command when you have enough GPU/RAM. Configs often use 1–2; a higher value processes more chunks per forward pass and can cut **several seconds** on long files. Example: `{"cmd": "separate", "input": "...", "output_dir": "...", "model": "bsrofo_sw", "batch_size": 4}`. If you hit OOM, lower it.
+
+2. **Keep `use_fast: true` (default)**  
+   The worker already defaults to the fast demix path (result/counter on device, single `.cpu()` at end). Do not set `"use_fast": false` unless you need the legacy path.
+
+3. **Model loading: mmap + SSD**  
+   Ensure storage is reported as SSD so the worker uses mmap for checkpoint load (faster first load). Use the `set_storage_type` / storage config if your app exposes it.
+
+4. **Overlap**  
+   The worker uses `num_overlap: 1` by default for speed. Passing a higher overlap (e.g. 2) can improve quality but increases time; leave at 1 when optimizing for speed.
+
+5. **Warm runs**  
+   First separation after load is “cold” (kernels, caches). Running a short dummy separation after load, or reusing the same model for many files, keeps runs warm and closer to the best timings in the doc.
+
+6. **Optional: `torch.compile` (advanced)**  
+   For PyTorch 2+, compiling the model once after load can reduce warm separation time at the cost of a longer first run. Not enabled by default; enable only if you profile and see benefit.
+
+### CPU optimizations (and MPS relevance)
+
+BS-RoFormer and Audio-Separator workers apply these CPU-specific optimizations (inspired by the original fast build):
+
+| Optimization | Effect | MPS relevance |
+|--------------|--------|---------------|
+| **OMP_NUM_THREADS, MKL_NUM_THREADS, OPENBLAS_NUM_THREADS** | Set to physical cores *before* importing torch. Maximizes parallelization for OpenMP/BLAS ops. | MPS uses CPU fallbacks for STFT/ISTFT on older macOS; these env vars apply to those fallbacks (set at process start). |
+| **KMP_AFFINITY, KMP_BLOCKTIME** | Thread pinning and immediate release. ~34% speedup on Intel. | Less impact on Apple Silicon; env vars are harmless. |
+| **torch.set_num_threads(physical_cores)** | PyTorch intra-op parallelism. | Skipped for MPS/CUDA (GPU handles parallelism). |
+| **torch.set_num_interop_threads(cores//2)** | Inter-op parallelism. | Skipped for MPS/CUDA. |
+| **Precision 'medium'** | ~10% speedup on CPU vs 'high'. | MPS uses 'high'; mixed precision via autocast. |
+| **MAX_CACHED_MODELS=0 on CPU** | No model cache; load/unload per job. ~27% faster on CPU (avoids memory pressure/throttling). | MPS keeps cache (2 models); GPU benefits from caching. |
+
+**Libraries:** No extra libraries needed for these gains. `torch.compile` (PyTorch 2+) can optionally reduce warm time; profile before enabling.
+
+**Run all runnable tests:** `tests/scripts/run_all_tests.sh` runs Demucs E2E and BS-RoFormer E2E (when models dir exists), using frozen exe or Python worker wrappers. Compare printed timings to the expected ranges; aim to match or beat them. Every 10 seconds saved on cold or warm path is a concrete win.
+
+**Profile Demucs when cold is slower than ~0.9s:** Use `scripts/utils/profile_demucs.py` to break down separation into load_track, apply_model, and save. With `--cprofile` it prints top functions and saves `/tmp/demucs_profile.prof` for snakeviz. Typical findings (Mac ARM MPS, 4s input): apply_model ~65–75%, save ~18%, load_track ~7–16%. Hotspots: MPS→CPU transfers for stem saves (~0.2s), group_norm/var_mean, conv1d. Try `--shifts 0` for faster (lower quality) runs.
+
+**Profile BS-RoFormer when cold is slow (~10s):** Use `scripts/utils/profile_bsroformer.py` to break down separation into load_model, audio_load, model_to_device, demix, and save. With `--cprofile` it prints top functions and saves `/tmp/bsroformer_profile.prof` for snakeviz. Typical findings (Mac ARM MPS, 4s input): demix ~90%, audio_load ~5%, model_to_device ~5%. Hotspots in demix: GLU (~2s), scaled_dot_product_attention (~1.2s), linear layers (~0.25s). Use `--batch-size 4` or 8 for faster inference.
+
+### Faster results (verified)
+
+These settings are **verified faster** in project tests (frozen exe or Python worker, MPS on Mac ARM, 4s test input):
+
+| Setting | Effect | Verified numbers |
+|--------|--------|------------------|
+| **Warm run (same model)** | Second separation in same process is much faster than first (cold). | Demucs: cold ~1.35s, **warm ~0.55s** (≈2.5× faster). Keep worker and model loaded for repeated files. |
+| **BS-RoFormer `batch_size` 4 or 8** | More chunks per forward pass; fewer kernel launches. | Pass `"batch_size": 4` (or 8 if VRAM allows) in `separate` JSON. Configs often use 1–2; 4/8 can save **several seconds** on longer files. |
+| **`use_fast: true` (default)** | Uses demix_fast (result on device, one `.cpu()` at end). | Worker defaults to this. Do not set `"use_fast": false` when optimizing for speed. |
+| **E2E benchmark with `--batch-size`** | BS-RoFormer benchmark can pass batch_size to the worker. | `python tests/python/benchmarks/benchmark_worker_e2e.py ... --batch-size 4` for BS-RoFormer. |
+| **Run-all script** | Single command runs Demucs + BS-RoFormer with faster defaults. | `./tests/scripts/run_all_tests.sh` uses **`--batch-size 4`** for BS-RoFormer when models dir exists. |
+
+**Demucs (4s input, MPS):** Start→ready ~0.6s, load model ~0.2s, separate cold ~1.3s, **separate warm ~0.55s**. Total benchmark (ready + load + cold + warm) ~3s. Warm is the faster result; reuse the same worker and model for batch jobs.
+
+**BS-RoFormer:** When you have a models dir, run the benchmark with `--batch-size 4` (or 8) to get faster separation than config default. The run-all script does this automatically.
 
 ### Sequence pipeline (real use case)
 
@@ -778,6 +901,10 @@ Config files store these parameters. Wrong values cause model loading to fail.
    - `tests/run_benchmarks_mac.sh` for Demucs, BS-RoFormer, Audio-Separator, Apollo (4s/40s).
    - Default models dir: `~/Documents/DSU/ThirdPartyApps/Models`. Override with `DSU_MODELS`.
 
+9. **BS-RoFormer worker: use_fast default True** (Feb 2026)
+   - Worker JSON `separate` now defaults to `use_fast: true` (demix_fast path) for best performance: result/counter stay on device, single `.cpu()` at end. Clients can pass `"use_fast": false` if needed.
+   - **Final performance verification (release checklist)** added under Testing: device check, E2E benchmarks, mmap, CPU/MPS/CUDA verification steps so each release keeps high performance.
+
 ### 🔄 In Progress
 
 - Progress reporting for long operations
@@ -851,6 +978,41 @@ python tests/benchmark_worker_e2e.py --exe dist/dsu/dsu-demucs --worker demucs \
 | BSRoformer (cached) | 0.7-1s |
 | Apollo (first run) | 5-8s |
 | Apollo (cached) | 1.5-2s |
+
+**Faster results:** Warm separation and larger `batch_size` (BS-RoFormer) are verified faster. See [Faster results (verified)](#faster-results-verified).
+
+### Final performance verification (release checklist)
+
+Before tagging a release or shipping a final update, run these checks to ensure high performance is preserved:
+
+1. **Worker device and ready**
+   - Start each worker with the target device (`--device cuda`, `--device mps`, or `--device cpu`). Confirm the ready message shows the correct `"device"` and (for CPU) `"threads"` (physical cores).
+
+2. **E2E benchmarks**
+   - Run `tests/python/benchmarks/benchmark_worker_e2e.py` for at least BS-RoFormer and Demucs (and Apollo if you use it), with your frozen exe and test audio (e.g. 4s WAV). Save the JSON output and compare to the [Expected Results](#expected-results) and [Mac ARM timing table](#mac-arm-pytorch-210-mps--4s-test-audio) (or your platform’s baseline). Cold/warm separation times should be in the same ballpark as documented.
+
+3. **BS-RoFormer: use_fast default**
+   - The worker defaults to `use_fast: true` (demix_fast path) for best throughput. If you override it, ensure you intend to; otherwise leave default for release.
+
+4. **Model loading: mmap**
+   - Workers use `safe_torch_load(..., mmap=True)` when supported and storage is SSD. Confirm no regression: first load and “same model cached” timings should match prior baselines (see [Model Loading Benchmarks](#model-loading-benchmarks)).
+
+5. **CPU (when testing on CPU)**
+   - During a separation, check Activity Monitor / Task Manager: you should see high multi-core usage (e.g. 600–800% on an 8-core machine). See [CPU multithreading (BS-RoFormer on CPU)](#cpu-multithreading-bsroformer-on-cpu).
+
+6. **MPS (Mac ARM)**
+   - Confirm ready shows `"device": "mps"`. Run a separation and check Activity Monitor → Window → GPU History for Metal activity. Optional: compare `tests/validation_output/mps_timing_after.json` (or similar) to previous runs. See [Verifying MPS usage (Mac ARM)](#verifying-mps-usage-mac-arm).
+
+7. **CUDA (Windows/Linux)**
+   - Run a separation and run `nvidia-smi -l 1` in another terminal. GPU-Util and Memory-Usage should be high during the run. See [Checking GPU utilization (BS-RoFormer)](#checking-gpu-utilization-bsroformer).
+
+**Quick command (Mac, frozen exe in `dist/dsu/`, 4s test audio):**
+```bash
+python tests/python/benchmarks/benchmark_worker_e2e.py --exe dist/dsu/dsu-bsroformer --worker bsroformer --device mps --input tests/audio/test_4s.wav --output-dir tests/benchmark_output/bsroformer
+```
+Compare printed timings to the expected ranges above; repeat for Demucs/Apollo as needed.
+
+**Verification script:** `tests/scripts/verify_performance.sh [bsroformer|demucs]` runs the E2E benchmark for the given worker (default BS-RoFormer), infers device (MPS on Mac ARM, else CPU), and prints timings. Prereqs: frozen exe in `dist/dsu/`, test audio, and for BS-RoFormer a models dir (or `DSU_MODELS`). Optional env: `DSU_EXE_DIR`, `DSU_DEVICE`, `DSU_TEST_INPUT`, `DSU_MODELS`.
 
 ---
 

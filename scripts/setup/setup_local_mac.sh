@@ -14,7 +14,8 @@
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$PROJECT_ROOT"
 
 NONINTERACTIVE=
 DO_FREEZE=
@@ -37,10 +38,10 @@ echo ""
 ARCH=$(uname -m)
 if [[ "$ARCH" = "arm64" ]]; then
     echo "Detected: Apple Silicon (arm64) -> build_runtime_mac_mps.sh"
-    RUNTIME_SCRIPT="./build_runtime_mac_mps.sh"
+    RUNTIME_SCRIPT="$PROJECT_ROOT/scripts/building/sh/build_runtime_mac_mps.sh"
 else
     echo "Detected: Intel (x86_64) -> build_runtime_mac_intel.sh"
-    RUNTIME_SCRIPT="./build_runtime_mac_intel.sh"
+    RUNTIME_SCRIPT="$PROJECT_ROOT/scripts/building/sh/build_runtime_mac_intel.sh"
 fi
 echo ""
 
@@ -65,9 +66,14 @@ fi
 # 2. Smoke-test workers
 # -----------------------------------------------------------------------------
 echo "[2/3] Smoke-testing workers (run_local.sh demucs --help)..."
-./run_local.sh demucs --help
+"$PROJECT_ROOT/scripts/run_local.sh" demucs --help
 echo "[2/3] Smoke-test: demucs --help OK"
 echo ""
+
+# Runtime lives in scripts/building/sh/runtime after running the runtime script
+RUNTIME_PY="$PROJECT_ROOT/scripts/building/sh/runtime/bin/python"
+BUILD_DSU="$PROJECT_ROOT/scripts/building/py/build_dsu.py"
+DSU_DIST="$PROJECT_ROOT/scripts/building/py/dist/dsu"
 
 # -----------------------------------------------------------------------------
 # 3. Freeze (optional)
@@ -78,17 +84,17 @@ if [[ -n "$DO_FREEZE" ]]; then
     # Set DSU_BUILD_OPTIMIZE=2 for maximum speed (removes docstrings too, may break introspection)
     export DSU_BUILD_OPTIMIZE=${DSU_BUILD_OPTIMIZE:-1}
     echo "  Using bytecode optimization level: $DSU_BUILD_OPTIMIZE"
-    ./runtime/bin/python build_dsu.py
+    "$RUNTIME_PY" "$BUILD_DSU"
     echo ""
-    echo "Freeze complete. Output: dist/dsu/"
-    echo "  ./dist/dsu/dsu-demucs --help"
-    echo "  ./dist/dsu/dsu-demucs --worker"
+    echo "Freeze complete. Output: scripts/building/py/dist/dsu/"
+    echo "  $DSU_DIST/dsu-demucs --help"
+    echo "  $DSU_DIST/dsu-demucs --worker"
 else
     echo "[3/3] Skip freeze (run with 'freeze' to build: ./setup_local_mac.sh -y freeze)"
     echo ""
     echo "To freeze locally later:"
-    echo "  ./runtime/bin/python build_dsu.py"
-    echo "  -> dist/dsu/dsu-demucs, dsu-bsroformer, dsu-audio-separator (macOS)"
+    echo "  $RUNTIME_PY $BUILD_DSU"
+    echo "  -> scripts/building/py/dist/dsu/dsu-demucs, dsu-bsroformer, dsu-audio-separator (macOS)"
 fi
 
 echo ""
@@ -97,11 +103,11 @@ echo "Setup complete."
 echo "============================================================================="
 echo ""
 echo "Test workers:"
-echo "  ./run_local.sh demucs --help"
-echo "  ./run_local.sh demucs --worker"
-echo "  ./run_local.sh bsroformer --help"
-echo "  ./run_local.sh audio-separator --help"
+echo "  ./scripts/run_local.sh demucs --help"
+echo "  ./scripts/run_local.sh demucs --worker"
+echo "  ./scripts/run_local.sh bsroformer --help"
+echo "  ./scripts/run_local.sh audio-separator --help"
 echo ""
 echo "Freeze (create Mac executables):"
-echo "  ./runtime/bin/python build_dsu.py"
+echo "  scripts/building/sh/runtime/bin/python scripts/building/py/build_dsu.py"
 echo ""

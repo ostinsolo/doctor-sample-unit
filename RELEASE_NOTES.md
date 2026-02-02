@@ -19,7 +19,7 @@
 - Model: `bsrofo_sw` (6-stem separation)
 - Platform: Intel Mac (x86_64)
 - Build: Frozen executable with bundled Python runtime
-- Location: `scripts/build/py/dist/dsu/dsu-bsroformer`
+- Location: `scripts/building/py/dist/dsu/dsu-bsroformer`
 
 ### All Workers
 
@@ -31,7 +31,7 @@
 
 ## Build Information
 
-**Build Location:** `scripts/build/py/dist/dsu/`
+**Build Location:** `scripts/building/py/dist/dsu/`
 
 **Executables:**
 - `dsu-demucs` (53 KB)
@@ -44,6 +44,6 @@
 ## Release Instructions
 
 For Intel Mac builds, upload manually to GitHub releases:
-1. Navigate to `scripts/build/py/dist/dsu/`
+1. Navigate to `scripts/building/py/dist/dsu/`
 2. Create archive: `tar -czf dsu-mac-intel.tar.gz dsu-* lib/`
 3. Upload to GitHub release

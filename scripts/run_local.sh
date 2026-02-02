@@ -6,7 +6,7 @@
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$SCRIPT_DIR"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUNTIME=
 WORKER=
 
@@ -25,13 +25,15 @@ shift
 
 if [[ -f "$PROJECT_ROOT/runtime/bin/python" ]]; then
   RUNTIME="$PROJECT_ROOT/runtime/bin/python"
+elif [[ -f "$PROJECT_ROOT/scripts/building/sh/runtime/bin/python" ]]; then
+  RUNTIME="$PROJECT_ROOT/scripts/building/sh/runtime/bin/python"
 elif [[ -f "$PROJECT_ROOT/runtime/Scripts/python.exe" ]]; then
   RUNTIME="$PROJECT_ROOT/runtime/Scripts/python.exe"
 elif command -v python3 &>/dev/null; then
   RUNTIME=python3
-  echo "WARNING: No runtime/ found. Using system python3. Install deps or run build_runtime_mac_mps.sh (Mac) first." >&2
+  echo "WARNING: No runtime/ found. Using system python3. Run scripts/building/sh/build_runtime_mac_mps.sh (Mac) first." >&2
 else
-  echo "ERROR: No Python found. Create runtime with build_runtime_mac_mps.sh (Mac) or use a venv with deps." >&2
+  echo "ERROR: No Python found. Create runtime with scripts/building/sh/build_runtime_mac_mps.sh (Mac) or use a venv with deps." >&2
   exit 1
 fi
 

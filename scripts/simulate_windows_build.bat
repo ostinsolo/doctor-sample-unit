@@ -16,9 +16,10 @@ set "PATH=%FFMPEG_DIR%;%PATH%"
 echo   FFmpeg: %FFMPEG_DIR%
 echo.
 
-echo Step 2: pip install -r requirements-cpu.txt
+echo Step 2: pip install -r requirements-cpu.txt + audio-separator --no-deps
 pip install --upgrade pip
 pip install -r requirements-cpu.txt
+pip install audio-separator==0.41.0 --no-deps
 if errorlevel 1 goto fail
 echo.
 
@@ -28,7 +29,7 @@ if errorlevel 1 goto fail
 echo.
 
 echo Step 4: Run build_dsu.py
-python build_dsu.py
+python scripts\building\py\build_dsu.py
 if errorlevel 1 goto fail
 echo.
 

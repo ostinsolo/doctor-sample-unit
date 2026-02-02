@@ -44,7 +44,7 @@ pip install 'samplerate>=0.2.3' --force-reinstall
 
 **Expected pip message:** Pip may print a dependency conflict: `audio-separator 0.41.0 requires samplerate==0.1.0, but you have samplerate 0.2.3 which is incompatible.` That is **expected and safe to ignore**. We intentionally override the pin so the correct (universal2) library is used on Mac ARM. The API is compatible (`samplerate.resample(..., converter_type=...)` and `librosa.resample(..., res_type='sinc_best')` work with 0.2.3); VR separation has been verified with 0.2.3.
 
-Then build as usual (`python build_dsu.py`). The frozen app will use the universal2 samplerate (no x86_64 dylib).
+Then build as usual (`python scripts/building/py/build_dsu.py` from project root). The frozen app will use the universal2 samplerate (no x86_64 dylib).
 
 ### 2. CI (GitHub Actions Mac ARM)
 

@@ -130,6 +130,26 @@ if [ ! -f "$REQ_FILE" ]; then
 fi
 # Use uv (like build_runtime_mac_intel.sh) - requirements from project root
 uv pip install -r "$REQ_FILE"
+
+# CRITICAL: Remove conflicting OpenMP library (mirror Intel script)
+# On Intel: remove ALL libomp.dylib, keep libiomp5.dylib (torch ships libiomp5)
+# On ARM: remove only sklearn's libomp (torch ships libomp, no libiomp5 - must keep torch's)
+echo ""
+echo "Removing conflicting OpenMP library (libomp.dylib from sklearn)..."
+echo "  (sklearn's libomp conflicts with torch; sklearn will use torch's OpenMP instead)"
+REMOVED_COUNT=0
+for omp_file in $(find "$RUNTIME_DIR" -path "*sklearn*" -name "libomp.dylib" 2>/dev/null); do
+    echo "  Removing: $omp_file"
+    rm -f "$omp_file"
+    REMOVED_COUNT=$((REMOVED_COUNT + 1))
+done
+if [ $REMOVED_COUNT -gt 0 ]; then
+    echo "  ✅ Removed $REMOVED_COUNT sklearn libomp.dylib (keeps torch's libomp on ARM)"
+else
+    echo "  No sklearn libomp.dylib found (or already removed)"
+fi
+
+uv pip install audio-separator==0.41.0 --no-deps
 # Mac ARM: samplerate 0.1.0 ships x86_64-only libsamplerate.dylib; use 0.2.3+ (universal2)
 uv pip install 'samplerate>=0.2.3' --force-reinstall
 
