@@ -290,6 +290,7 @@ jobs:
             | **Windows CUDA** | `dsu-win-cuda.7z` | NVIDIA CUDA 12.6 | ~2GB |
             | **Windows CPU** | `dsu-win-cpu.zip` | None | ~800MB |
             | **macOS ARM** | `dsu-mac-arm.tar.gz` | MPS (Metal) | ~1.5GB |
+            | **macOS Intel** | `dsu-mac-intel.tar.gz` | CPU | ~1.5GB (manual build) |
             
             ---
             

@@ -1510,7 +1510,7 @@ def _setup_shutdown_handlers():
 # WORKER MODE
 # ============================================================================
 
-def worker_mode(models_dir=None, device="cpu", configs_dir=None):
+def worker_mode(models_dir=None, device="cpu", configs_dir=None, max_cached_models=None):
     """
     Persistent worker mode for Node.js integration.
     
@@ -1557,8 +1557,16 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
         # Use 'medium' precision for CPU (faster, ~10% speedup) - this achieved 46.38s performance
         # 'high'/'highest' is default but slower - we use 'medium' for best performance
         _setup_cpu_precision('medium' if device_str == "cpu" else 'high')
-        
-        send_json({"status": "ready", "device": str(torch_device), "threads": num_threads})
+        # Cache: disabled on CPU; on MPS/CUDA use max_cached_models (default 1)
+        _cache_enabled = device_str != "cpu"
+        _initial_max = 0 if device_str == "cpu" else (max(1, min(4, max_cached_models or 1)))
+        send_json({
+            "status": "ready",
+            "device": str(torch_device),
+            "threads": num_threads,
+            "cache_enabled": _cache_enabled,
+            "max_cached_models": _initial_max
+        })
         
     except Exception as e:
         send_json({"status": "error", "message": f"Failed to initialize: {str(e)}"})
@@ -1576,10 +1584,15 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
     # This enables fast switching between models (e.g., bsroformer_4stem + drumsep)
     # NOTE: On CPU, caching can cause memory pressure and CPU throttling, making it slower
     # Testing shows load/unload (no cache) is ~27% faster on CPU
-    # For CPU: Consider MAX_CACHED_MODELS = 0 (disable caching) for better performance
-    # For GPU: Caching is beneficial (no CPU throttling)
-    MAX_CACHED_MODELS = 0 if str(torch_device) == "cpu" else 2  # Disable cache on CPU for better performance
+    # For CPU: MAX_CACHED_MODELS = 0 (disable). For MPS/CUDA: configurable via --max-cached-models or set_cache_size
+    _is_cpu = str(torch_device) == "cpu"
+    _default_gpu_cache = 1 if max_cached_models is None else max_cached_models
+    MAX_CACHED_MODELS = [0 if _is_cpu else max(1, min(4, _default_gpu_cache))]  # Mutable for set_cache_size
     model_cache = {}  # {model_identifier: (model, config, model_info)}
+    if _is_cpu:
+        print("[BSRoformer Worker] Model cache DISABLED (CPU mode - load/unload is faster)", file=sys.stderr)
+    else:
+        print(f"[BSRoformer Worker] Model cache ENABLED ({MAX_CACHED_MODELS[0]} models) for {torch_device}", file=sys.stderr)
     
     def get_cached_model(identifier):
         """Get a model from cache if available"""
@@ -1591,7 +1604,7 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
         # If caching is disabled (MAX_CACHED_MODELS = 0), don't cache
         if MAX_CACHED_MODELS == 0:
             return  # Don't cache, model will be unloaded after use
-        if len(model_cache) >= MAX_CACHED_MODELS:
+        if len(model_cache) >= MAX_CACHED_MODELS[0]:
             # Evict oldest (first inserted)
             oldest_key = next(iter(model_cache))
             model_cache.pop(oldest_key)  # Remove from cache, GC handles cleanup
@@ -1727,6 +1740,7 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                 
                 # Load model if needed (with cache support)
                 # Priority: model_path (direct) > model (registry name)
+                model_loaded_from_disk = False  # Track for done response (cache hit = faster)
                 if model_path:
                     # Direct path loading - check cache first
                     if model is None or current_model_name != model_path:
@@ -1737,6 +1751,7 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                                 model_ref[0] = model
                                 current_model_name = model_path
                             else:
+                                model_loaded_from_disk = True
                                 send_json({"status": "loading_model", "model": os.path.basename(model_path)})
                                 
                                 model, config, model_info = load_model_from_path(
@@ -1763,6 +1778,7 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                             model_ref[0] = model
                             current_model_name = target_model
                         else:
+                            model_loaded_from_disk = True
                             send_json({"status": "loading_model", "model": target_model})
                             sys.stdout.flush()
                             print(f"[DEBUG] Loading model: {target_model}", file=sys.stderr)
@@ -1863,7 +1879,7 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                     
                     # If caching is disabled on CPU, unload model after processing for better memory management
                     # This prevents memory pressure and CPU throttling that slows down subsequent runs
-                    if MAX_CACHED_MODELS == 0 and str(torch_device) == "cpu":
+                    if MAX_CACHED_MODELS[0] == 0 and str(torch_device) == "cpu":
                         # Clear model from memory (but keep config/model_info for response)
                         model = None
                         model_ref[0] = None
@@ -1885,7 +1901,8 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                         "elapsed": round(elapsed, 2),
                         "output_dir": out_subdir,
                         "files": output_files,
-                        "stems": model_info.get("stems", [])
+                        "stems": model_info.get("stems", []),
+                        "model_from_cache": not model_loaded_from_disk
                     })
                     
                 except Exception as e:
@@ -1909,7 +1926,7 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                     "ready": True,
                     "cached_models": list(model_cache.keys()),
                     "cache_size": len(model_cache),
-                    "max_cache_size": MAX_CACHED_MODELS
+                    "max_cache_size": MAX_CACHED_MODELS[0]
                 })
             
             elif cmd == "list_cached":
@@ -1926,7 +1943,7 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                     "status": "cached_models",
                     "models": cached_info,
                     "count": len(model_cache),
-                    "max": MAX_CACHED_MODELS
+                    "max": MAX_CACHED_MODELS[0]
                 })
             
             elif cmd == "preload_model":
@@ -1987,6 +2004,27 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None):
                 model_ref[0] = None
                 send_json({"status": "cache_cleared", "models_cleared": count})
             
+            elif cmd == "set_cache_size":
+                # Change max cached models at runtime (Node.js can call this)
+                # Only applies on GPU; on CPU cache is always disabled
+                n = job.get("n") or job.get("max_cached_models")
+                if n is not None:
+                    try:
+                        n = max(0, min(4, int(n)))
+                        if str(torch_device) == "cpu":
+                            MAX_CACHED_MODELS[0] = 0  # CPU: always disabled
+                        else:
+                            MAX_CACHED_MODELS[0] = max(1, n)  # GPU: 1-4
+                        send_json({
+                            "status": "cache_size_updated",
+                            "max_cached_models": MAX_CACHED_MODELS[0],
+                            "cache_enabled": MAX_CACHED_MODELS[0] > 0
+                        })
+                    except (TypeError, ValueError):
+                        send_json({"status": "error", "message": "Invalid n: must be 0-4"})
+                else:
+                    send_json({"status": "error", "message": "Missing n or max_cached_models"})
+            
             elif cmd == "set_storage_type":
                 # Configure mmap preference based on storage type
                 # SSD: use mmap (faster initial load, reads from disk on-demand)
@@ -2036,6 +2074,8 @@ def main():
         parser.add_argument('--configs-dir', type=str, default=None, help='Configs directory (fallback for config files)')
         parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu', 'mps'],
                             help='Device to use')
+        parser.add_argument('--max-cached-models', type=int, default=None,
+                            help='Max models to cache on GPU (1-4, default 1; 0 on CPU)')
         parser.add_argument('--ensemble', action='store_true',
                             help='Run ensemble utility and exit')
         parser.add_argument('--files', type=str, nargs='+',
@@ -2061,7 +2101,10 @@ def main():
             ensemble_files(ensemble_args)
             sys.exit(0)
         elif args.worker:
-            sys.exit(worker_mode(args.models_dir, args.device, args.configs_dir))
+            max_cached = None
+            if args.max_cached_models is not None:
+                max_cached = max(0, min(4, args.max_cached_models))
+            sys.exit(worker_mode(args.models_dir, args.device, args.configs_dir, max_cached_models=max_cached))
         else:
             print("Usage: python bsroformer_worker.py --worker [--models-dir /path] [--device cuda|cpu]")
             print("   or: python bsroformer_worker.py --ensemble --files a.wav b.wav --output res.wav")

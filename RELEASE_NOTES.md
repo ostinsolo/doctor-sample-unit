@@ -1,5 +1,24 @@
 # Release Notes
 
+## v1.4.0 (2026-02-02)
+
+### Changes
+- **Demucs worker**: Soundfile fallback for WAV saving on Windows (no TorchCodec wheels)
+- **Model caching**: Configurable `--max-cached-models` and `set_cache_size` for Demucs & BS-RoFormer
+- **BS-RoFormer**: `cache_enabled`, `max_cached_models` in ready status; `model_from_cache` in done
+- **Audio Separator**: `cache_enabled`, `max_cached_models` in ready status; Apollo CPU unload after use
+- **BS-RoFormer model**: Explicit `center=True` in STFT kwargs for consistency
+
+### Builds (all architectures)
+| Platform | File | GPU |
+|----------|------|-----|
+| Windows CUDA | `dsu-win-cuda.7z` | NVIDIA CUDA 12.6 |
+| Windows CPU | `dsu-win-cpu.zip` | None |
+| macOS ARM | `dsu-mac-arm.tar.gz` | MPS (Metal) |
+| macOS Intel | `dsu-mac-intel.tar.gz` | CPU (manual build) |
+
+---
+
 ## Frozen Executable Performance Benchmarks
 
 ### BS-RoFormer Worker

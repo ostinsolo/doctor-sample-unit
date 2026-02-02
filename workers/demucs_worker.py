@@ -209,10 +209,9 @@ def _load_track_safe(path, audio_channels, samplerate):
 
 def _save_audio_demucs_or_fallback(wav, path, samplerate, clip="rescale", bits_per_sample=16, **kwargs):
     """
-    Save audio via TorchCodec (torchaudio.save). For WAV we call torchaudio.save
-    without encoding/bits_per_sample so TorchCodec does not warn (it uses file
-    extension for format; FFmpeg chooses default WAV encoding). For .mp3/.flac
-    we use Demucs save_audio. Uses Demucs prevent_clip so behavior matches CLI.
+    Save audio via torchaudio.save (TorchCodec) when available, else soundfile.
+    TorchCodec has no Windows wheels on PyPI; soundfile fallback ensures worker
+    works on Windows. For .mp3/.flac we use Demucs save_audio.
     """
     from pathlib import Path
     from demucs.audio import prevent_clip
@@ -224,13 +223,24 @@ def _save_audio_demucs_or_fallback(wav, path, samplerate, clip="rescale", bits_p
     if wav.device.type != "cpu":
         wav = wav.cpu()
 
-    # WAV: use torchaudio.save with only sample_rate so TorchCodec is used
-    # without encoding/bits_per_sample (TorchCodec doesn't support them and warns;
-    # format is determined by .wav extension, FFmpeg uses default PCM).
+    # WAV: try torchaudio.save (TorchCodec); fall back to soundfile on ImportError
+    # (torchcodec not available, e.g. Windows builds).
     if suffix == ".wav":
         wav = prevent_clip(wav, mode=clip)
-        import torchaudio
-        torchaudio.save(str(path), wav, sample_rate=samplerate)
+        try:
+            import torchaudio
+            torchaudio.save(str(path), wav, sample_rate=samplerate)
+        except ImportError as e:
+            if "torchcodec" in str(e).lower():
+                # Fallback: soundfile (no torchcodec on Windows)
+                import soundfile as sf
+                subtype = {16: "PCM_16", 24: "PCM_24", 32: "PCM_32"}.get(bits_per_sample, "PCM_16")
+                data = wav.detach().cpu().numpy()
+                if data.ndim == 2:
+                    data = data.T  # soundfile expects [T, C]
+                sf.write(str(path), data, samplerate, subtype=subtype)
+            else:
+                raise
         return
 
     # .mp3 / .flac: use Demucs save_audio (does prevent_clip and passes encoding/bits_per_sample)
@@ -444,7 +454,7 @@ def _setup_shutdown_handlers():
     monitor.start()
 
 
-def worker_mode():
+def worker_mode(max_cached_models=None):
     """
     Persistent worker mode for Node.js integration.
     
@@ -527,7 +537,18 @@ def worker_mode():
         else:
             device = torch.device('cpu')
         
-        send_json({"status": "ready", "device": str(device)})
+        # Cache: disabled on CPU; on MPS/CUDA use max_cached_models (default 2 for backward compat)
+        device_str = str(device)
+        _cache_enabled = device_str != "cpu"
+        _default_gpu = 2 if max_cached_models is None else max_cached_models
+        _initial_max = 0 if device_str == "cpu" else max(1, min(4, _default_gpu))
+        
+        send_json({
+            "status": "ready",
+            "device": device_str,
+            "cache_enabled": _cache_enabled,
+            "max_cached_models": _initial_max
+        })
         
     except Exception as e:
         send_json({"status": "error", "message": f"Failed to initialize: {str(e)}"})
@@ -537,12 +558,21 @@ def worker_mode():
     model = None
     current_model_name = None
     current_repo = None  # Track current repo for custom models
+    current_model_from_cache = False  # True if current model was served from cache
     model_ref = [None]  # Mutable reference for cleanup
     
     # Model cache for keeping multiple models in GPU memory
     # This enables fast switching between models (e.g., htdemucs_ft + inaki)
-    MAX_CACHED_MODELS = 2  # Limit to prevent OOM (reduced from 3 for better performance)
+    # On CPU: cache disabled (0). On MPS/CUDA: configurable via --max-cached-models or set_cache_size (default 2)
+    _is_cpu = str(device) == "cpu"
+    _default_gpu_cache = 2 if max_cached_models is None else max_cached_models
+    MAX_CACHED_MODELS = [0 if _is_cpu else max(1, min(4, _default_gpu_cache))]  # Mutable for set_cache_size
     model_cache = {}  # {model_identifier: (model, repo_path, stems)}
+    
+    if _is_cpu:
+        print("[Demucs Worker] Model cache DISABLED (CPU mode)", file=sys.stderr)
+    else:
+        print(f"[Demucs Worker] Model cache ENABLED ({MAX_CACHED_MODELS[0]} models) for {device}", file=sys.stderr)
     
     def get_cache_key(model_name, repo_path=None):
         """Create unique cache key for model+repo combination"""
@@ -556,8 +586,10 @@ def worker_mode():
     def add_to_cache(model_name, repo_path, model_obj, stems):
         """Add model to cache, evict oldest if full"""
         nonlocal model_cache
+        if MAX_CACHED_MODELS[0] == 0:
+            return  # Cache disabled (CPU mode)
         key = get_cache_key(model_name, repo_path)
-        if len(model_cache) >= MAX_CACHED_MODELS:
+        if len(model_cache) >= MAX_CACHED_MODELS[0]:
             # Evict oldest (first inserted)
             oldest_key = next(iter(model_cache))
             model_cache.pop(oldest_key)  # Remove from cache, GC handles cleanup
@@ -634,6 +666,7 @@ def worker_mode():
                         model, current_repo, stems = cached
                         model_ref[0] = model
                         current_model_name = model_name
+                        current_model_from_cache = True
                         send_json({
                             "status": "model_loaded",
                             "model": model_name,
@@ -666,6 +699,7 @@ def worker_mode():
                     model.eval()
                     model_ref[0] = model  # Keep reference for cleanup
                     current_model_name = model_name
+                    current_model_from_cache = False
                     
                     # Get stems for this model
                     stems = list(model.sources)
@@ -732,6 +766,7 @@ def worker_mode():
                             model, current_repo, _ = cached
                             model_ref[0] = model
                             current_model_name = target_model
+                            current_model_from_cache = True
                         else:
                             send_json({"status": "loading_model", "model": target_model})
                             
@@ -754,6 +789,7 @@ def worker_mode():
                             model.eval()
                             model_ref[0] = model  # Keep reference for cleanup
                             current_model_name = target_model
+                            current_model_from_cache = False
                             
                             # Add to cache
                             stems = list(model.sources)
@@ -840,7 +876,8 @@ def worker_mode():
                         "elapsed": round(elapsed, 2),
                         "output_dir": str(out_dir),
                         "files": output_files,
-                        "stems": stems
+                        "stems": stems,
+                        "model_from_cache": current_model_from_cache
                     })
                     
                 except Exception as e:
@@ -858,7 +895,7 @@ def worker_mode():
                     "ready": True,
                     "cached_models": [k.split('|')[0] for k in model_cache.keys()],
                     "cache_size": len(model_cache),
-                    "max_cache_size": MAX_CACHED_MODELS
+                    "max_cache_size": MAX_CACHED_MODELS[0]
                 })
             
             elif cmd == "list_cached":
@@ -876,7 +913,7 @@ def worker_mode():
                     "status": "cached_models",
                     "models": cached_info,
                     "count": len(model_cache),
-                    "max": MAX_CACHED_MODELS
+                    "max": MAX_CACHED_MODELS[0]
                 })
             
             elif cmd == "preload_model":
@@ -936,6 +973,27 @@ def worker_mode():
                 model_ref[0] = None
                 send_json({"status": "cache_cleared", "models_cleared": count})
             
+            elif cmd == "set_cache_size":
+                # Change max cached models at runtime (Node.js can call this)
+                # Only applies on GPU; on CPU cache is always disabled
+                n = job.get("n") or job.get("max_cached_models")
+                if n is not None:
+                    try:
+                        n = max(0, min(4, int(n)))
+                        if str(device) == "cpu":
+                            MAX_CACHED_MODELS[0] = 0  # CPU: always disabled
+                        else:
+                            MAX_CACHED_MODELS[0] = max(1, n)  # GPU: 1-4
+                        send_json({
+                            "status": "cache_size_updated",
+                            "max_cached_models": MAX_CACHED_MODELS[0],
+                            "cache_enabled": MAX_CACHED_MODELS[0] > 0
+                        })
+                    except (TypeError, ValueError):
+                        send_json({"status": "error", "message": "Invalid n: must be 0-4"})
+                else:
+                    send_json({"status": "error", "message": "Missing n or max_cached_models"})
+            
             elif cmd == "set_storage_type":
                 # Configure mmap preference based on storage type
                 # SSD: use mmap (faster initial load, reads from disk on-demand)
@@ -976,9 +1034,19 @@ def worker_mode():
 def main():
     """Main entry point - routes to worker mode or standard CLI"""
     if WORKER_MODE:
-        # Remove --worker from args before processing
+        # Parse worker-specific args before removing --worker
+        max_cached = None
+        if '--max-cached-models' in sys.argv:
+            idx = sys.argv.index('--max-cached-models')
+            if idx + 1 < len(sys.argv):
+                try:
+                    max_cached = max(0, min(4, int(sys.argv[idx + 1])))
+                    sys.argv.pop(idx)
+                    sys.argv.pop(idx)  # remove value
+                except (ValueError, IndexError):
+                    pass
         sys.argv.remove('--worker')
-        sys.exit(worker_mode())
+        sys.exit(worker_mode(max_cached_models=max_cached))
     else:
         _configure_demucs_cache()
         _patch_cli_save_audio_to_soundfile()

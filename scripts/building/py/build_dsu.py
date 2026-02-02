@@ -42,7 +42,7 @@ if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
 
 # Application branding
 APP_NAME = "Doctor Sample Unit"
-APP_VERSION = "1.3.9"
+APP_VERSION = "1.4.0"
 APP_COMPANY = "Doctor Sample Unit"
 APP_COPYRIGHT = "Copyright (c) 2026 Doctor Sample Unit"
 

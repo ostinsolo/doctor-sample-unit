@@ -653,7 +653,19 @@ def worker_mode():
                 except RuntimeError:
                     pass
         
-        send_json({"status": "ready", "message": "Worker ready"})
+        # Cache: disabled on CPU (faster load/unload), 1 model on MPS/CUDA (matches BS-RoFormer)
+        _cache_enabled = _device != "cpu"
+        send_json({
+            "status": "ready",
+            "message": "Worker ready",
+            "device": _device,
+            "cache_enabled": _cache_enabled,
+            "max_cached_models": 0 if _device == "cpu" else 1
+        })
+        if _device == "cpu":
+            print("[AudioSep Worker] Model cache DISABLED (CPU mode)", file=sys.stderr)
+        else:
+            print(f"[AudioSep Worker] Model cache ENABLED (1 model) for VR + Apollo on {_device}", file=sys.stderr)
         
     except Exception as e:
         send_json({"status": "error", "message": f"Failed to initialize: {str(e)}"})
@@ -869,6 +881,10 @@ def worker_mode():
                         overlap_seconds=chunk_overlap
                     )
                     apollo_model_path = model_path
+                # On CPU: unload Apollo model after use (avoids memory pressure, matches BS-RoFormer)
+                if _device == "cpu":
+                    apollo_model = None
+                    apollo_model_path = None
                 elapsed = time.time() - start_time
                 emit({"status": "done", "elapsed": round(elapsed, 2), "files": [output_path], "cached": use_cached})
             except Exception as e:

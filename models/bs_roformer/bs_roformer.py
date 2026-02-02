@@ -459,7 +459,8 @@ class BSRoformer(Module):
             n_fft=stft_n_fft,
             hop_length=stft_hop_length,
             win_length=stft_win_length,
-            normalized=stft_normalized
+            normalized=stft_normalized,
+            center=True,  # Must match stft/istft; explicit for consistency
         )
 
         self.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)
@@ -630,7 +631,7 @@ class BSRoformer(Module):
         
         # rearrange and istft - optimized paths for CPU vs MPS
         stft_repr = rearrange(stft_repr, 'b n (f s) t -> (b n s) f t', s=self.audio_channels)
-        
+
         if x_is_mps:
             # MPS path: try on device, fallback to CPU if needed
             try:
