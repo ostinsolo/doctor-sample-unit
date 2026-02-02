@@ -21,6 +21,14 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      - name: Debug project layout (verify paths)
+        run: |
+          echo "GITHUB_WORKSPACE=${{ github.workspace }}"
+          echo "Contents of repo root:"
+          dir
+          echo "scripts/building/py exists?"
+          if (Test-Path "scripts/building/py/build_dsu.py") { echo "YES - build_dsu.py found" } else { echo "NO - build_dsu.py MISSING" }
       
       - uses: actions/setup-python@v5
         with:
@@ -62,21 +70,21 @@ jobs:
           uv pip install --system -r requirements-cuda.txt
 
       - name: Build DSU
-        run: python build_dsu.py
+        run: python scripts/building/py/build_dsu.py
 
       - name: Quick smoke test
         shell: cmd
         run: |
           echo Testing executables exist...
-          dir dist\dsu\*.exe
+          dir scripts\building\py\dist\dsu\*.exe
           echo.
           echo Testing dsu-demucs can start...
-          dist\dsu\dsu-demucs.exe --help || echo Help not implemented, checking worker mode...
+          scripts\building\py\dist\dsu\dsu-demucs.exe --help || echo Help not implemented, checking worker mode...
 
       - name: Create archive
         run: |
           Invoke-WebRequest -Uri https://www.7-zip.org/a/7zr.exe -OutFile 7zr.exe
-          .\7zr.exe a -m0=lzma2 -mmt=on -mx=7 "dsu-win-cuda.7z" ".\dist\dsu"
+          .\7zr.exe a -m0=lzma2 -mmt=on -mx=7 "dsu-win-cuda.7z" ".\scripts\building\py\dist\dsu"
         shell: pwsh
 
       - uses: actions/upload-artifact@v4
@@ -134,16 +142,16 @@ jobs:
           uv pip install --system -r requirements-cpu.txt
 
       - name: Build DSU
-        run: python build_dsu.py
+        run: python scripts/building/py/build_dsu.py
 
       - name: Quick smoke test
         shell: cmd
         run: |
           echo Testing executables exist...
-          dir dist\dsu\*.exe
+          dir scripts\building\py\dist\dsu\*.exe
 
       - name: Create archive
-        run: Compress-Archive -Path ".\dist\dsu" -DestinationPath "dsu-win-cpu.zip"
+        run: Compress-Archive -Path ".\scripts\building\py\dist\dsu" -DestinationPath "dsu-win-cpu.zip"
         shell: pwsh
 
       - uses: actions/upload-artifact@v4
@@ -160,6 +168,14 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      - name: Debug project layout (verify paths)
+        run: |
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          echo "Contents of repo root:"
+          ls -la
+          echo "scripts/building/py exists?"
+          if [ -f "scripts/building/py/build_dsu.py" ]; then echo "YES - build_dsu.py found"; else echo "NO - build_dsu.py MISSING"; fi
       
       - uses: actions/setup-python@v5
         with:
@@ -194,19 +210,18 @@ jobs:
       - name: Build DSU
         run: |
           source .venv/bin/activate
-          python build_dsu.py
+          python scripts/building/py/build_dsu.py
 
       - name: Quick smoke test
         run: |
           echo "Testing executables exist..."
-          ls -la dist/dsu/dsu-*
+          ls -la scripts/building/py/dist/dsu/dsu-*
           echo "Testing dsu-demucs can start..."
-          dist/dsu/dsu-demucs --help || echo "Help not implemented, checking worker mode..."
+          scripts/building/py/dist/dsu/dsu-demucs --help || echo "Help not implemented, checking worker mode..."
 
       - name: Create archive
         run: |
-          cd dist
-          tar -czf ../dsu-mac-arm.tar.gz dsu
+          tar -czf dsu-mac-arm.tar.gz -C scripts/building/py/dist dsu
 
       - uses: actions/upload-artifact@v4
         with:

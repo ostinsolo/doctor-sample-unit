@@ -38,6 +38,8 @@ ENV/
 env/
 .venv/
 build_env/
+simulate_ci_venv/
+simulate_ci_out/
 
 # -----------------------------------------------------------------------------
 # IDE
@@ -49,6 +51,7 @@ build_env/
 *.swp
 *.swo
 *~
+*.bak
 .DS_Store
 Thumbs.db
 
