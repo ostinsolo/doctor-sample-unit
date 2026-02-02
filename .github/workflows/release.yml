@@ -192,7 +192,9 @@ jobs:
           uv pip install 'samplerate>=0.2.3' --force-reinstall
 
       - name: Build DSU
-        run: python build_dsu.py
+        run: |
+          source .venv/bin/activate
+          python build_dsu.py
 
       - name: Quick smoke test
         run: |
