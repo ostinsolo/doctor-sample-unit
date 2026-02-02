@@ -1,68 +1,22 @@
-# =============================================================================
-# Syncthing Ignore File for DSU Shared Runtime
-# =============================================================================
-# Excludes build artifacts, virtual environments, and platform-specific files
-# from being synced across devices
-# =============================================================================
+# Syncthing ignore – don't sync envs or build output between Mac/Windows
+# Mac: runtime/ (setup_local_mac, build_runtime_mac_*)
+# Windows: build_env/ (build_manual.bat, setup_build_env)
+# Both: dist/, other local venvs
 
-# -----------------------------------------------------------------------------
-# Build Outputs (large, generated, platform-specific)
-# -----------------------------------------------------------------------------
 runtime/
-bin/
+build_env/
 dist/
 build/
-*.7z
-*.zip
-*.tar.gz
-dsu-*.tar.gz
-dsu-*.7z
-dsu-*.zip
+bin/
 
-# -----------------------------------------------------------------------------
-# Python Cache & Compiled Files
-# -----------------------------------------------------------------------------
-__pycache__/
-**/__pycache__/
-*.py[cod]
-*$py.class
-*.pyc
-*.so
-*.pyd
-.Python
-*.egg-info/
-*.egg
-.eggs/
-pip-log.txt
-pip-delete-this-directory.txt
-
-# -----------------------------------------------------------------------------
-# Virtual Environments (platform-specific, very large)
-# -----------------------------------------------------------------------------
 venv/
-ENV/
-env/
 .venv/
-build_env/
+env/
+ENV/
 simulate_ci_venv/
+simulate_ci_out/
 simulate_*/
-runtime/
 
-# -----------------------------------------------------------------------------
-# IDE & Editor Files
-# -----------------------------------------------------------------------------
-.vscode/
-.idea/
-.cursor/
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
-
-# -----------------------------------------------------------------------------
-# Test Outputs & Temporary Files
-# -----------------------------------------------------------------------------
 tests/benchmark_output/
 tests/*_output/
 tests/audio/
@@ -75,49 +29,16 @@ tests/optimized_test_output/
 tests/optimized_output/
 tests/sequence_output/
 tests/validation_output/
-test_output/
-*.wav
-*.mp3
-*.flac
-simulate_ci_out/
 
-# -----------------------------------------------------------------------------
-# Model Weights (download separately, very large)
-# -----------------------------------------------------------------------------
-weights/
-*.pth
-*.ckpt
-*.bin
-*.safetensors
-*.onnx
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+*.egg
 
-# -----------------------------------------------------------------------------
-# Logs & Temporary Files
-# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
 *.log
 logs/
-*.tmp
-*.temp
-
-# -----------------------------------------------------------------------------
-# Platform-Specific Build Artifacts
-# -----------------------------------------------------------------------------
-# Intel Mac specific
-requirements-mac-intel.txt.backup
-
-# -----------------------------------------------------------------------------
-# Syncthing Metadata
-# -----------------------------------------------------------------------------
-.stfolder/
-.stversions/
-# Note: .stignore itself should be synced so all devices use the same rules
-
-# -----------------------------------------------------------------------------
-# Local Development Files (not needed in sync)
-# -----------------------------------------------------------------------------
-ffmpeg_path.txt
-check_*.py
-test_*.py
-test_*.js
-!workers/test_*.py
-!scripts/test_optional_imports.py
