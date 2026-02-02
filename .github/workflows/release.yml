@@ -45,7 +45,7 @@ jobs:
       - name: Install uv (fast Python package manager)
         run: |
           powershell -Command "irm https://astral.sh/uv/install.ps1 | iex"
-          $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+          $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
           uv --version
 
       - name: Cache uv packages
@@ -58,7 +58,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+          $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
           uv pip install -r requirements-cuda.txt
 
       - name: Build DSU
@@ -117,7 +117,7 @@ jobs:
       - name: Install uv (fast Python package manager)
         run: |
           powershell -Command "irm https://astral.sh/uv/install.ps1 | iex"
-          $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+          $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
           uv --version
 
       - name: Cache uv packages
@@ -130,7 +130,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+          $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
           uv pip install -r requirements-cpu.txt
 
       - name: Build DSU
@@ -185,6 +185,8 @@ jobs:
       - name: Install dependencies
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
+          uv venv
+          source .venv/bin/activate
           uv pip install -r requirements-mac-mps.txt
           # Mac ARM: samplerate 0.1.0 ships x86_64-only libsamplerate.dylib; use 0.2.3+ (universal2, no dylib)
           uv pip install 'samplerate>=0.2.3' --force-reinstall
