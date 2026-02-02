@@ -59,7 +59,7 @@ jobs:
       - name: Install dependencies
         run: |
           $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
-          uv pip install -r requirements-cuda.txt
+          uv pip install --system -r requirements-cuda.txt
 
       - name: Build DSU
         run: python build_dsu.py
@@ -131,7 +131,7 @@ jobs:
       - name: Install dependencies
         run: |
           $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
-          uv pip install -r requirements-cpu.txt
+          uv pip install --system -r requirements-cpu.txt
 
       - name: Build DSU
         run: python build_dsu.py
