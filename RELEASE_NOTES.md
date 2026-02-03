@@ -1,5 +1,14 @@
 # Release Notes
 
+## v1.4.1 (2026-02-02)
+
+### Changes
+- **Audio Separator worker**: Apollo CPU threading controls and thread reporting in `ready/status`
+- **Build scripts**: Manual mac build verifies `--max-cached-models` is supported
+- **Docs**: Rebuild steps and Apollo threading parameters
+
+---
+
 ## v1.4.0 (2026-02-02)
 
 ### Changes

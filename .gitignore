@@ -54,6 +54,7 @@ simulate_ci_out/
 *.bak
 .DS_Store
 Thumbs.db
+.stignore
 
 # -----------------------------------------------------------------------------
 # Tests (local development only)
@@ -83,8 +84,6 @@ logs/
 # -----------------------------------------------------------------------------
 # Local Development / Testing
 # -----------------------------------------------------------------------------
-test_audiosep/
-test_flowsep/
 build_dsu older.py
 test_*.py
 test_*.js
