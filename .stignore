@@ -17,6 +17,9 @@ simulate_ci_venv/
 simulate_ci_out/
 simulate_*/
 
+test_audiosep/
+test_flowsep/
+
 tests/benchmark_output/
 tests/*_output/
 tests/audio/

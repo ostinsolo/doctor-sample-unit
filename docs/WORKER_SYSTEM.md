@@ -142,7 +142,9 @@ Mac ARM uses **PyTorch 2.10** (not 2.5). See `requirements-mac-mps.txt`. Validat
   "feature_dim": 384,         // Model architecture (256/384/192)
   "layer": 6,                 // Number of layers (6 or 8)
   "chunk_seconds": 7.0,       // Chunk size for processing
-  "chunk_overlap": 0.5        // Overlap between chunks
+  "chunk_overlap": 0.5,       // Overlap between chunks
+  "cpu_threads": 4,           // (optional) Fixed CPU thread count; omit to use worker default
+  "auto_cpu_threads": true    // (optional) Load-based auto-tuning; omit = false
 }
 // Response: {"status": "done", "elapsed": 1.47, "files": ["/path/to/restored.wav"]}
 
@@ -1049,6 +1051,42 @@ Compare printed timings to the expected ranges above; repeat for Demucs/Apollo a
    - If you see this error, the **deployed** `model_utils` (e.g. `dsu/utils/model_utils.py` in DSU_VSTOPIA / Max) is an older version with an unconditional `import loralib`, or a **different** `utils` package is on `sys.path` first (e.g. another project folder) and that one still imports loralib.
    - **Debug:** Run the worker with `DSU_DEBUG_LORALIB=1`. If the optional-import version is loaded, stderr will show `[model_utils] loaded from ...` and `loralib available: False`. If you never see that and still get `No module named 'loralib'`, the running code is still the old one.
    - **Fix:** Update the `model_utils` that is **actually** used at runtime (check `sys.path` and worker cwd) to match the repo’s `utils/model_utils.py` (at least the optional import block). **Do not** add loralib as a required dependency for inference; keep it optional.
+
+---
+
+## Rebuilding Frozen Executables
+
+Node.js passes `--max-cached-models` when starting workers (e.g. `dsu-bsroformer --worker --models-dir ... --device mps --max-cached-models 2`). If the frozen executable was built from an older codebase, it may fail with:
+
+```
+dsu-bsroformer: error: unrecognized arguments: --max-cached-models 2
+```
+
+**Fix:** Rebuild the frozen executables from the current source.
+
+**Build flow (Mac Apple Silicon):**
+
+1. **Create runtime** (venv + deps; run once or when deps change):
+   ```bash
+   ./scripts/building/sh/build_runtime_mac_mps.sh -y
+   ```
+   Creates `scripts/building/sh/runtime/` with PyTorch, demucs, audio-separator, etc.
+
+2. **Freeze executables** (run from project root):
+   ```bash
+   scripts/building/sh/runtime/bin/python scripts/building/py/build_dsu.py
+   ```
+   Output: `scripts/building/py/dist/dsu/` (dsu-demucs, dsu-bsroformer, dsu-audio-separator).
+
+**Mac (Intel):** Use `build_runtime_mac_intel.sh` instead of `build_runtime_mac_mps.sh`, then same `build_dsu.py` step.
+
+**Copy to app:** Copy `scripts/building/py/dist/dsu/dsu-*` to your app (e.g. DSU-VSTOPIA/ThirdPartyApps/dsu/).
+
+**Verify after rebuild:**
+```bash
+scripts/building/py/dist/dsu/dsu-bsroformer --worker --models-dir /tmp/x --device mps --max-cached-models 2
+# Should start (emit "loading" then "ready"); no "unrecognized arguments"
+```
 
 ---
 

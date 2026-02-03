@@ -11,7 +11,7 @@
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$PROJECT_ROOT"
 
 echo "============================================================"
@@ -72,9 +72,22 @@ echo "Smoke test..."
 "$DSU_DIST/dsu-bsroformer" --help >/dev/null 2>&1 || { echo "ERROR: dsu-bsroformer failed to start."; exit 1; }
 "$DSU_DIST/dsu-audio-separator" --help >/dev/null 2>&1 || { echo "ERROR: dsu-audio-separator failed to start."; exit 1; }
 
+# Verify --max-cached-models is accepted (Node.js passes this when starting workers)
+echo "Verifying --max-cached-models (required by Node.js)..."
+( echo '{"cmd":"exit"}'; sleep 1 ) | "$DSU_DIST/dsu-bsroformer" --worker --models-dir /tmp/bsr_nonexist --device mps --max-cached-models 2 2>&1 > /tmp/bsr_test_out.txt
+if grep -q "unrecognized arguments" /tmp/bsr_test_out.txt 2>/dev/null; then
+  echo "ERROR: dsu-bsroformer does not accept --max-cached-models (Node.js will fail)"
+  cat /tmp/bsr_test_out.txt
+  rm -f /tmp/bsr_test_out.txt
+  exit 1
+fi
+echo "  dsu-bsroformer --max-cached-models: OK"
+rm -f /tmp/bsr_test_out.txt
+
 echo ""
 echo "============================================================"
 echo "Build complete! Test with:"
 echo "  ./dist/dsu/dsu-demucs --help"
 echo "  ./dist/dsu/dsu-demucs --worker"
+echo "  ./dist/dsu/dsu-bsroformer --worker --max-cached-models 2"
 echo "============================================================"

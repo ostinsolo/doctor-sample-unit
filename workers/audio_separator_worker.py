@@ -428,7 +428,7 @@ def worker_mode():
     Protocol:
         Input (one JSON per line):
             {"cmd": "separate", "input": "/path/to/audio.wav", "output_dir": "/output/", "model": "17_HP-Wind_Inst-UVR.pth", ...}
-            {"cmd": "apollo", "input": "/path/to/audio.wav", "output": "/path/to/restored.wav", "model_path": "/models/apollo.ckpt", ...}
+            {"cmd": "apollo", "input": "/path/to/audio.wav", "output": "/path/to/restored.wav", "model_path": "/models/apollo.ckpt", "cpu_threads": 4, "auto_cpu_threads": true, ...}
             {"cmd": "load_model", "model": "17_HP-Wind_Inst-UVR.pth"}
             {"cmd": "batch", "jobs": [{"cmd": "separate", ...}, {"cmd": "apollo", ...}]}
             {"cmd": "exit"}
@@ -612,8 +612,8 @@ def worker_mode():
         # CRITICAL: Setup CPU threading optimizations BEFORE any computation
         # This matches the optimizations in BS-RoFormer worker for maximum CPU performance
         device_str = str(_device)
+        num_threads = _setup_cpu_threading(device_str)
         if device_str == "cpu":
-            _setup_cpu_threading(device_str)
             _setup_cpu_precision('medium')  # ~10% speedup on CPU
         
         _use_autocast = _device in ("cuda", "mps")
@@ -659,6 +659,8 @@ def worker_mode():
             "status": "ready",
             "message": "Worker ready",
             "device": _device,
+            "threads": num_threads,
+            "auto_cpu_threads": True,  # Always auto-detect physical cores on CPU
             "cache_enabled": _cache_enabled,
             "max_cached_models": 0 if _device == "cpu" else 1
         })
@@ -833,6 +835,8 @@ def worker_mode():
             layer = job.get("layer")
             chunk_seconds = job.get("chunk_seconds", 7.0)
             chunk_overlap = job.get("chunk_overlap", 0.5)
+            cpu_threads = job.get("cpu_threads")  # None = use worker default
+            auto_cpu_threads = job.get("auto_cpu_threads")  # None = use worker default
             if not input_path:
                 emit({"status": "error", "message": "No input file specified"})
                 return
@@ -854,7 +858,12 @@ def worker_mode():
                 use_cached = (apollo_model is not None and apollo_model_path == model_path)
                 if use_cached:
                     import torch
-                    from apollo.apollo_separator import load_audio, save_audio, _chunk_restore
+                    from apollo.apollo_separator import load_audio, save_audio, _chunk_restore, _configure_cpu_threads
+                    if _device == "cpu" and (cpu_threads is not None or auto_cpu_threads):
+                        _configure_cpu_threads(
+                            auto_cpu_threads=bool(auto_cpu_threads) if auto_cpu_threads is not None else False,
+                            cpu_threads=cpu_threads
+                        )
                     audio = load_audio(input_path)
                     audio = audio.to(apollo_device)
                     total_samples = audio.shape[-1]
@@ -878,7 +887,9 @@ def worker_mode():
                         feature_dim=feature_dim,
                         layer=layer,
                         chunk_seconds=chunk_seconds,
-                        overlap_seconds=chunk_overlap
+                        overlap_seconds=chunk_overlap,
+                        cpu_threads=cpu_threads,
+                        auto_cpu_threads=bool(auto_cpu_threads) if auto_cpu_threads is not None else False
                     )
                     apollo_model_path = model_path
                 # On CPU: unload Apollo model after use (avoids memory pressure, matches BS-RoFormer)
@@ -891,7 +902,16 @@ def worker_mode():
                 emit({"status": "error", "message": f"Apollo restoration failed: {str(e)}", "traceback": traceback.format_exc()})
             return
         if cmd == "get_status":
-            emit({"status": "status", "separator_model": current_model, "apollo_model": apollo_model_path, "ready": True})
+            _num_t = get_physical_cores() if _device == "cpu" else 0
+            emit({
+                "status": "status",
+                "separator_model": current_model,
+                "apollo_model": apollo_model_path,
+                "device": _device,
+                "threads": _num_t,
+                "auto_cpu_threads": True,
+                "ready": True
+            })
             return
         if cmd == "set_storage_type":
             storage_type = job.get("type", "ssd").lower()
