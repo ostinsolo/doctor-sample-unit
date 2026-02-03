@@ -54,6 +54,7 @@ if getattr(sys, "frozen", False) and sys.platform == "darwin":
 import json
 import time
 import traceback
+from utils.runtime_policy import load_runtime_policy, get_policy_value
 
 # =============================================================================
 # CRITICAL FIX for PyTorch 2.x with cx_Freeze
@@ -1044,6 +1045,14 @@ def main():
                     sys.argv.pop(idx)
                     sys.argv.pop(idx)  # remove value
                 except (ValueError, IndexError):
+                    pass
+        if max_cached is None:
+            policy = load_runtime_policy()
+            policy_val = get_policy_value(policy, "demucs", "max_cached_models")
+            if policy_val is not None:
+                try:
+                    max_cached = max(0, min(4, int(policy_val)))
+                except (ValueError, TypeError):
                     pass
         sys.argv.remove('--worker')
         sys.exit(worker_mode(max_cached_models=max_cached))

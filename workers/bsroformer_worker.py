@@ -98,6 +98,7 @@ import argparse
 import time
 import json
 import traceback
+from utils.runtime_policy import load_runtime_policy, get_policy_value
 
 # CRITICAL: Set thread environment variables BEFORE importing torch/numpy
 # These libraries read env vars at import time, so they must be set first
@@ -2104,6 +2105,14 @@ def main():
             max_cached = None
             if args.max_cached_models is not None:
                 max_cached = max(0, min(4, args.max_cached_models))
+            if max_cached is None:
+                policy = load_runtime_policy()
+                policy_val = get_policy_value(policy, "bsroformer", "max_cached_models")
+                if policy_val is not None:
+                    try:
+                        max_cached = max(0, min(4, int(policy_val)))
+                    except (ValueError, TypeError):
+                        pass
             sys.exit(worker_mode(args.models_dir, args.device, args.configs_dir, max_cached_models=max_cached))
         else:
             print("Usage: python bsroformer_worker.py --worker [--models-dir /path] [--device cuda|cpu]")
