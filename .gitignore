@@ -56,6 +56,7 @@ simulate_ci_out/
 .DS_Store
 Thumbs.db
 .stignore
+test_for_node.amxd
 
 # -----------------------------------------------------------------------------
 # Tests (local development only)
