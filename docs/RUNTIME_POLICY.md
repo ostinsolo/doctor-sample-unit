@@ -29,3 +29,7 @@ Example:
   }
 }
 ```
+
+## Resource-Aware System (Orchestrator)
+
+The orchestrator detects system resources and updates `runtime_policy.json` with `system_report` and `resource_tier`. Implementation: `orchestrator/system_report.py`. Run: `cd orchestrator && python -m system_report` or `python -m system_report --force`. See [RESOURCE_AWARE_SYSTEM_SPEC.md](RESOURCE_AWARE_SYSTEM_SPEC.md).

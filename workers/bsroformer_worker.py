@@ -256,31 +256,44 @@ def _setup_cpu_precision(precision='medium'):
     if hasattr(torch, 'set_float32_matmul_precision') and precision == 'medium':
         torch.set_float32_matmul_precision('medium')
 
-# CRITICAL: Remove conflicting OpenMP library (libomp.dylib from sklearn)
-# This prevents thread scheduling conflicts and improves performance by ~34%
-# Must be done BEFORE importing torch/numpy to prevent library from loading
+# CRITICAL: Fix OpenMP for sklearn (macOS)
+# sklearn's _openmp_helpers expects libomp at sklearn/.dylibs/libomp.dylib
+# - Intel: torch uses libiomp5; we remove sklearn's libomp to avoid conflict
+# - ARM: torch uses libomp; we REPLACE sklearn's with torch's (same lib, no conflict)
+# Must run BEFORE any sklearn/torch import
 def _fix_openmp_conflict():
-    """Remove sklearn's libomp.dylib to prevent OpenMP conflicts"""
-    import os
+    import shutil
+    import importlib.util
+    if sys.platform != "darwin":
+        return
     try:
-        import sklearn
-        sklearn_omp = os.path.join(os.path.dirname(sklearn.__file__), '.dylibs', 'libomp.dylib')
-        if os.path.exists(sklearn_omp):
-            # Rename to prevent loading (can't delete if already loaded)
-            disabled_path = f"{sklearn_omp}.disabled"
-            if not os.path.exists(disabled_path):
-                try:
-                    os.rename(sklearn_omp, disabled_path)
-                    import sys
-                    print(f"[OpenMP Fix] Disabled sklearn's libomp.dylib to prevent conflicts", file=sys.stderr)
-                except (OSError, PermissionError):
-                    # File might be locked if already loaded
-                    pass
-    except ImportError:
-        # sklearn not installed, no conflict
-        pass
+        # Get paths without importing (avoids loading sklearn before fix)
+        sk_spec = importlib.util.find_spec("sklearn")
+        th_spec = importlib.util.find_spec("torch")
+        if not sk_spec or not sk_spec.submodule_search_locations:
+            return
+        if not th_spec or not th_spec.submodule_search_locations:
+            return
+        sklearn_base = sk_spec.submodule_search_locations[0]
+        torch_base = th_spec.submodule_search_locations[0]
+        sklearn_omp_dest = os.path.join(sklearn_base, ".dylibs", "libomp.dylib")
+        torch_omp_src = os.path.join(torch_base, "lib", "libomp.dylib")
+        if os.path.isfile(torch_omp_src) and os.path.getsize(torch_omp_src) > 0:
+            # ARM: torch has libomp; replace sklearn's with torch's (sklearn needs it at that path)
+            os.makedirs(os.path.dirname(sklearn_omp_dest), exist_ok=True)
+            shutil.copy2(torch_omp_src, sklearn_omp_dest)
+            print(f"[OpenMP Fix] Replaced sklearn libomp with torch's (ARM)", file=sys.stderr)
+        else:
+            # Intel: torch has libiomp5, no libomp; remove sklearn's to avoid conflict
+            if os.path.exists(sklearn_omp_dest):
+                disabled = f"{sklearn_omp_dest}.disabled"
+                if not os.path.exists(disabled):
+                    try:
+                        os.rename(sklearn_omp_dest, disabled)
+                        print(f"[OpenMP Fix] Disabled sklearn's libomp.dylib (Intel)", file=sys.stderr)
+                    except (OSError, PermissionError):
+                        pass
     except Exception:
-        # Ignore any errors
         pass
 
 _fix_openmp_conflict()
@@ -642,6 +655,9 @@ def load_model_from_path(checkpoint_path, config_path=None, model_type=None):
     elif model_type == "apollo":
         from models.look2hear.models.apollo import Apollo
         model = Apollo(**dict(config.model))
+    elif model_type == "bandit":
+        from models.bandit.core.model import MultiMaskMultiSourceBandSplitRNNSimple
+        model = MultiMaskMultiSourceBandSplitRNNSimple(**dict(config.model))
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     
@@ -823,6 +839,9 @@ def load_model_impl(model_name, models_dir=None):
     elif model_type == "apollo":
         from models.look2hear.models.apollo import Apollo
         model = Apollo(**dict(config.model))
+    elif model_type == "bandit":
+        from models.bandit.core.model import MultiMaskMultiSourceBandSplitRNNSimple
+        model = MultiMaskMultiSourceBandSplitRNNSimple(**dict(config.model))
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     
@@ -1543,13 +1562,20 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None, max_cached_mode
         import librosa
         
         # Set up device
-        # CRITICAL: Use proper MPS detection to avoid false positives on Intel Mac
-        if device == "cuda" and torch.cuda.is_available():
+        # CRITICAL: "auto" or "cuda" when no CUDA → try MPS on Mac ARM, else CPU
+        if device == "auto" or (device == "cuda" and not torch.cuda.is_available()):
+            if torch.cuda.is_available():
+                torch_device = torch.device("cuda")
+            elif _should_use_mps():
+                torch_device = torch.device("mps")
+            else:
+                torch_device = torch.device("cpu")
+        elif device == "cuda" and torch.cuda.is_available():
             torch_device = torch.device("cuda")
         elif device == "mps" and _should_use_mps():
             torch_device = torch.device("mps")
         else:
-            torch_device = torch.device("cpu")
+            torch_device = torch.device(device if device in ("cpu", "cuda", "mps") else "cpu")
         
         # Threading optimization - CRITICAL: Set BEFORE any computation (matches old build)
         # Use shared helper function to avoid code duplication
@@ -1602,8 +1628,8 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None, max_cached_mode
     def add_to_cache(identifier, model_tuple):
         """Add model to cache, evict oldest if full"""
         nonlocal model_cache
-        # If caching is disabled (MAX_CACHED_MODELS = 0), don't cache
-        if MAX_CACHED_MODELS == 0:
+        # If caching is disabled (MAX_CACHED_MODELS[0] = 0), don't cache
+        if MAX_CACHED_MODELS[0] == 0:
             return  # Don't cache, model will be unloaded after use
         if len(model_cache) >= MAX_CACHED_MODELS[0]:
             # Evict oldest (first inserted)
@@ -1719,6 +1745,7 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None, max_cached_mode
                     send_json({"status": "error", "message": f"Failed to load model: {str(e)}"})
             
             elif cmd == "separate":
+                policy = load_runtime_policy()
                 input_path = job.get("input")
                 output_dir = job.get("output_dir") or job.get("output", "output")
                 model_name = job.get("model")
@@ -1727,10 +1754,98 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None, max_cached_mode
                 model_type = job.get("model_type")  # Optional: bs_roformer, mel_band_roformer, etc.
                 overlap = job.get("overlap")
                 batch_size = job.get("batch_size")
+                chunk_seconds = job.get("chunk_seconds")
                 pcm_type = job.get("pcm_type", "FLOAT")
                 two_stems = job.get("two_stems")
                 use_fast = job.get("use_fast", True)  # Default True for best performance (demix_fast)
-                
+                ensemble_models = job.get("ensemble")  # Comma-separated model names for native ensemble
+                ensemble_type = job.get("ensemble_type", "avg_wave")
+                ensemble_weights_str = job.get("ensemble_weights")
+
+                # JSON ensemble: run multiple models and merge (same as CLI --ensemble)
+                if ensemble_models:
+                    models_list = [m.strip() for m in str(ensemble_models).split(",") if m.strip()]
+                    if not models_list:
+                        send_json({"status": "error", "message": "ensemble requires comma-separated model names"})
+                        continue
+                    if not input_path:
+                        send_json({"status": "error", "message": "No input file specified"})
+                        continue
+                    if not os.path.exists(input_path):
+                        send_json({"status": "error", "message": f"Input file not found: {input_path}"})
+                        continue
+                    weights = [float(w) for w in ensemble_weights_str.split(",")] if ensemble_weights_str else [1.0] * len(models_list)
+                    if len(weights) != len(models_list):
+                        weights = [1.0] * len(models_list)
+                    try:
+                        from utils.ensemble import average_waveforms
+                        import tempfile
+                        import shutil
+                        import librosa
+                        import soundfile as sf
+                        import numpy as np
+                        base_temp_dir = tempfile.mkdtemp(prefix="mss_ensemble_json_")
+                        send_json({"status": "separating", "ensemble": models_list})
+                        sys.stdout.flush()
+                        try:
+                            for mn in models_list:
+                                model_e, config_e, info_e = load_model_impl(mn, models_dir)
+                                model_e = model_e.to(torch_device)
+                                model_out_dir = os.path.join(base_temp_dir, mn)
+                                separate_impl(
+                                    model_e, config_e, input_path, model_out_dir, info_e,
+                                    device=str(torch_device),
+                                    overlap=overlap,
+                                    batch_size=batch_size,
+                                    use_tta=job.get("use_tta", False),
+                                    output_format=job.get("format", "wav"),
+                                    pcm_type=pcm_type,
+                                    extract_instrumental=job.get("extract_instrumental", False),
+                                    selected_stems=job.get("stems"),
+                                    two_stems=two_stems,
+                                    chunk_seconds=job.get("chunk_seconds"),
+                                    chunk_overlap=job.get("chunk_overlap"),
+                                    use_fast=use_fast
+                                )
+                                del model_e
+                                import gc
+                                gc.collect()
+                            basename = os.path.splitext(os.path.basename(input_path))[0]
+                            final_out_subdir = os.path.join(output_dir, basename)
+                            os.makedirs(final_out_subdir, exist_ok=True)
+                            first_dir = os.path.join(base_temp_dir, models_list[0], basename)
+                            if os.path.exists(first_dir):
+                                stems = [f.replace(".wav", "").replace(".flac", "") for f in os.listdir(first_dir) if f.endswith((".wav", ".flac"))]
+                                for stem in stems:
+                                    waveforms = []
+                                    valid_weights = []
+                                    for i, mn in enumerate(models_list):
+                                        stem_path = os.path.join(base_temp_dir, mn, basename, f"{stem}.wav")
+                                        if not os.path.exists(stem_path):
+                                            stem_path = os.path.join(base_temp_dir, mn, basename, f"{stem}.flac")
+                                        if os.path.exists(stem_path):
+                                            wav, sr = librosa.load(stem_path, sr=None, mono=False)
+                                            if len(wav.shape) == 1:
+                                                wav = np.stack([wav, wav], axis=0)
+                                            waveforms.append(wav)
+                                            valid_weights.append(weights[i])
+                                    if waveforms:
+                                        min_len = min(w.shape[1] for w in waveforms)
+                                        waveforms = [w[:, :min_len] for w in waveforms]
+                                        merged = average_waveforms(np.array(waveforms), valid_weights, ensemble_type)
+                                        out_path = os.path.join(final_out_subdir, f"{stem}.{job.get('format', 'wav')}")
+                                        sf.write(out_path, merged.T, sr, subtype=pcm_type if job.get("format", "wav") == "wav" else None)
+                            output_files = []
+                            if os.path.isdir(final_out_subdir):
+                                output_files = [f for f in os.listdir(final_out_subdir) if f.endswith((".wav", ".flac"))]
+                            send_json({"status": "done", "output_dir": final_out_subdir, "files": output_files, "stems": stems, "ensemble": models_list})
+                        finally:
+                            shutil.rmtree(base_temp_dir, ignore_errors=True)
+                    except Exception as e:
+                        import traceback
+                        send_json({"status": "error", "message": str(e), "traceback": traceback.format_exc()})
+                    continue
+
                 if not input_path:
                     send_json({"status": "error", "message": "No input file specified"})
                     continue
@@ -2073,8 +2188,8 @@ def main():
         parser.add_argument('--worker', action='store_true', help='Run in worker mode')
         parser.add_argument('--models-dir', type=str, default=None, help='Models directory (contains models.json)')
         parser.add_argument('--configs-dir', type=str, default=None, help='Configs directory (fallback for config files)')
-        parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu', 'mps'],
-                            help='Device to use')
+        parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu', 'mps'],
+                            help='Device: auto (cuda>mps>cpu), cuda, mps, or cpu')
         parser.add_argument('--max-cached-models', type=int, default=None,
                             help='Max models to cache on GPU (1-4, default 1; 0 on CPU)')
         parser.add_argument('--ensemble', action='store_true',

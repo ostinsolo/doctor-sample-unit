@@ -166,6 +166,8 @@ PROJECT_PACKAGES = [
     "models.bs_roformer",
     "models.bandit",
     "models.bandit.core",
+    "models.bandit.core.model",
+    "models.bandit.core.model.bsrnn",
     "models.scnet",
     "models.scnet_unofficial",
     "utils",
@@ -508,6 +510,23 @@ def build_dsu():
                     print(f"  WARNING: Could not copy zlib shared library: {e}")
         if not zlib_copied:
             print(f"  WARNING: zlib shared library not found (tried: {zlib_candidates}); zipimport may fail at runtime")
+        
+        # ARM only: Replace dummy libomp.dylib with torch's real one
+        # - Dummy exists to satisfy cx_Freeze (sklearn's .dylibs removed to avoid OpenMP conflict)
+        # - Intel: torch uses libiomp5.dylib; we remove all libomp to avoid conflict - do NOT copy
+        # - ARM: torch uses libomp.dylib; libtorch_cpu.dylib needs real libomp at lib/libomp.dylib
+        import platform
+        if platform.machine() == "arm64":
+            torch_omp = os.path.join(lib_dir, "torch", "lib", "libomp.dylib")
+            lib_omp_dest = os.path.join(lib_dir, "libomp.dylib")
+            if os.path.isfile(torch_omp) and os.path.getsize(torch_omp) > 0:
+                try:
+                    shutil.copy2(torch_omp, lib_omp_dest)
+                    print(f"  Replaced lib/libomp.dylib with torch's libomp (ARM: required by libtorch_cpu.dylib)")
+                except Exception as e:
+                    print(f"  WARNING: Could not copy torch libomp to lib/: {e}")
+            else:
+                print(f"  WARNING: torch libomp not found at {torch_omp}")
     
     # =============================================================================
     # Post-build: Copy llvmlite.libs (Windows only)
@@ -574,6 +593,28 @@ def build_dsu():
     sep = "\\" if sys.platform == "win32" else "/"
     print(f"  {output_dir}{sep}{d1} --help")
     print(f"  {output_dir}{sep}{d2} --worker")
+    
+    # Optional: install to DSU_VSTOPIA (Max MSP shared runtime)
+    install_to = os.environ.get("DSU_INSTALL_DIR")
+    if install_to and os.path.isdir(install_to):
+        dsu_dest = os.path.join(install_to, "ThirdPartyApps", "dsu")
+        if os.path.isdir(os.path.dirname(dsu_dest)):
+            print()
+            print("Installing to DSU (DSU_INSTALL_DIR set)...")
+            os.makedirs(dsu_dest, exist_ok=True)
+            for worker in workers:
+                src = os.path.join(output_dir, f"{worker['exe_name']}{exe_suffix}")
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(dsu_dest, os.path.basename(src)))
+                    print(f"  Copied {worker['exe_name']}{exe_suffix} -> {dsu_dest}")
+            lib_src = os.path.join(output_dir, "lib")
+            lib_dest = os.path.join(dsu_dest, "lib")
+            if os.path.isdir(lib_src):
+                if os.path.isdir(lib_dest):
+                    shutil.rmtree(lib_dest)
+                shutil.copytree(lib_src, lib_dest)
+                print(f"  Copied lib/ -> {dsu_dest}")
+            print(f"  Done. Bandit and other models now supported.")
     
     return 0 if exe_total == len(workers) else 1
 

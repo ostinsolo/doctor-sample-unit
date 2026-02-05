@@ -1,4 +1,9 @@
 {
+  "basePath": "/path/to/DSU_VSTOPIA",
+  "outputDestination": "/path/to/DSU_VSTOPIA/Output_DSU",
+  "modelsDirectory": "/path/to/DSU_VSTOPIA/ThirdPartyApps/Models",
+  "ytDlpPath": "/path/to/DSU_VSTOPIA/ThirdPartyApps/yt-dlp/yt-dlp",
+  "youtubeOutputDir": "/path/to/DSU_VSTOPIA/Output_DSU/YouTube_DSU",
   "ffmpeg": {
     "lib_path": "/path/to/DSU/ThirdPartyApps/ffmpeg/lib"
   }

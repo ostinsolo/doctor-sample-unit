@@ -103,6 +103,18 @@ Mac ARM uses **PyTorch 2.10** (not 2.5). See `requirements-mac-mps.txt`. Validat
   "model": "bsroformer_4stem"
 }
 
+// Run ensemble (multiple models, merged with avg_wave)
+{
+  "cmd": "separate",
+  "input": "/path/to/audio.wav",
+  "output_dir": "/output/dir",
+  "ensemble": "bsroformer_4stem,scnet_xl_ihf,aname_4stem_large",
+  "ensemble_type": "avg_wave",
+  "ensemble_weights": "1.0,1.0,1.0",
+  "use_tta": false,
+  "overlap": 1
+}
+
 // Run separation (by direct path)
 {
   "cmd": "separate",

@@ -36,7 +36,7 @@ samplerate==0.1.0
 pydub>=0.25.0
 scipy>=1.10.0
 resampy>=0.4.0
-
+asteroid
 # Demucs (uses soundfile for audio I/O to avoid torchcodec dependency issues on Intel Mac)
 # torchcodec is optional - workers use soundfile fallback when torchcodec is not available
 demucs>=4.0.0
@@ -52,6 +52,10 @@ demucs>=4.0.0
 # -----------------------------------------------------------------------------
 # Model Dependencies
 # -----------------------------------------------------------------------------
+asteroid                  # Required for Bandit/MDX23c models
+spafe                     # Required by Bandit (fbanks)
+pedalboard                # Required by Bandit data module
+torch_audiomentations     # Required by Bandit augmentations
 einops>=0.7.0
 julius>=0.2.7
 diffq>=0.2.4              # Required for Demucs quantized models

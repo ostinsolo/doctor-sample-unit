@@ -37,6 +37,7 @@ venv/
 ENV/
 env/
 .venv/
+.venv_intent/
 build_env/
 simulate_ci_venv/
 simulate_ci_out/
@@ -97,3 +98,9 @@ test_build_env.bat
 # Downloaders (bundled with main project, not runtime)
 # -----------------------------------------------------------------------------
 downloaders/
+
+# -----------------------------------------------------------------------------
+# Separate repos (Orchestrator_intent, AudioSep-cxfreeze)
+# -----------------------------------------------------------------------------
+orchestrator/
+test_audiosep/

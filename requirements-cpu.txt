@@ -30,6 +30,7 @@ samplerate==0.1.0
 pydub>=0.25.0
 scipy>=1.10.0
 resampy>=0.4.0
+asteroid
 
 # Demucs (workers use soundfile for I/O; torchcodec has no Windows wheels on PyPI)
 demucs>=4.0.0
