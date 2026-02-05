@@ -1,5 +1,13 @@
 # Release Notes
 
+## v1.4.2 (2026-02-05)
+
+### Changes
+- **CI**: Removed test-orchestrator workflow (orchestrator moved to separate repo Orchestrator_intent)
+- **Gitignore**: orchestrator/, test_audiosep/, test_for_node.amxd
+
+---
+
 ## v1.4.1 (2026-02-02)
 
 ### Changes
