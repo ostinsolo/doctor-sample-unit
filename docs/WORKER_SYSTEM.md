@@ -2,11 +2,12 @@
 
 ## Overview
 
-The DSU (Deep Stem Unmixer) Worker System provides three persistent worker processes for audio separation and restoration:
+The DSU (Deep Stem Unmixer) Worker System provides four worker processes for audio separation, restoration, and denoising:
 
 1. **dsu-demucs** (Windows: `dsu-demucs.exe`) - Demucs hybrid transformer separation
 2. **dsu-bsroformer** (Windows: `dsu-bsroformer.exe`) - BS-RoFormer, MelBand-RoFormer, SCNet, MDX23C separation
 3. **dsu-audio-separator** (Windows: `dsu-audio-separator.exe`) - VR architecture separation + Apollo restoration
+4. **dsu-denoise** (Windows: `dsu-denoise.exe`) - Envelope-matched spectral subtraction (no models; lightweight)
 
 All workers use a JSON-over-stdin/stdout protocol for Node.js integration.
 
@@ -20,6 +21,8 @@ All workers use a JSON-over-stdin/stdout protocol for Node.js integration.
 
 Mac ARM uses **PyTorch 2.10** (not 2.5). See `requirements-mac-mps.txt`. Validated with runtime and frozen `dist/dsu/` builds.
 
+**Note:** `dsu-denoise` does not use PyTorch; it uses numpy, librosa, soundfile, scipy only. Fast startup.
+
 ---
 
 ## Architecture
@@ -30,18 +33,18 @@ Mac ARM uses **PyTorch 2.10** (not 2.5). See `requirements-mac-mps.txt`. Validat
 │  (Sends JSON commands, receives JSON responses)                  │
 └─────────────────────────────────────────────────────────────────┘
                               │
-        ┌─────────────────────┼─────────────────────┐
-        │                     │                     │
-        ▼                     ▼                     ▼
-┌───────────────┐    ┌───────────────┐    ┌───────────────┐
-│ dsu-demucs    │    │ dsu-bsroformer│    │ dsu-audio-sep │
-│   Worker      │    │    Worker     │    │    Worker     │
-├───────────────┤    ├───────────────┤    ├───────────────┤
-│ htdemucs      │    │ BSRoformer    │    │ VR Models     │
-│ htdemucs_ft   │    │ MelBandRofo   │    │ Apollo        │
-│ htdemucs_6s   │    │ SCNet         │    │               │
-│ mdx variants  │    │ MDX23C        │    │               │
-└───────────────┘    └───────────────┘    └───────────────┘
+        ┌─────────────────────┼─────────────────────┼─────────────────────┐
+        │                     │                     │                     │
+        ▼                     ▼                     ▼                     ▼
+┌───────────────┐    ┌───────────────┐    ┌───────────────┐    ┌───────────────┐
+│ dsu-demucs    │    │ dsu-bsroformer│    │ dsu-audio-sep │    │ dsu-denoise   │
+│   Worker      │    │    Worker     │    │    Worker     │    │    Worker     │
+├───────────────┤    ├───────────────┤    ├───────────────┤    ├───────────────┤
+│ htdemucs      │    │ BSRoformer    │    │ VR Models     │    │ Envelope-match│
+│ htdemucs_ft   │    │ MelBandRofo   │    │ Apollo        │    │ (no models)   │
+│ htdemucs_6s   │    │ SCNet         │    │               │    │               │
+│ mdx variants  │    │ MDX23C        │    │               │    │               │
+└───────────────┘    └───────────────┘    └───────────────┘    └───────────────┘
 ```
 
 ---
@@ -170,6 +173,43 @@ Mac ARM uses **PyTorch 2.10** (not 2.5). See `requirements-mac-mps.txt`. Validat
 }
 // Response: {"status": "done"|"error", "results": [{...}, {...}], "message": "..."}
 ```
+
+### Denoise Worker Commands
+
+The denoise worker uses **envelope-matched spectral subtraction** for **amplitude-correlated noise** — noise that follows the audio’s amplitude envelope (e.g. hiss that gets louder when the signal gets louder). No models are loaded; startup is fast.
+
+**Experiment context:** This technique was chosen after testing others that failed on amplitude-correlated noise: spectral gating, noisereduce (stationary/non-stationary), DeepFilterNet3, Demucs, VoiceFixer, multi-band de-hiss. Envelope-matched subtraction works because it scales the noise estimate with the audio envelope. See `noise_reduction/README.md` and `noise_reduction/PROJECT_SUMMARY.md`.
+
+**Common commands (same as other workers):** `ping`, `get_status`, `load_model` (no-op), `exit`.
+
+```json
+// load_model is a no-op (no model); responds for protocol compatibility
+{"cmd": "load_model"}
+// Response: {"status": "model_loaded", "model": "envelope_matched", "message": "..."}
+
+// Run denoising
+{
+  "cmd": "denoise",
+  "input": "/path/to/audio.wav",
+  "noise_profile": "/path/to/noise-profile.wav",
+  "output": "/path/to/output.wav",       // Optional; auto-generated if omitted
+  "subtraction_factor": 0.9,              // Optional; 0-1, default 0.9
+  "release_time": 0.1,                    // Optional; seconds (default 0.1)
+  "attack_time": 0.01,                    // Optional; seconds (default 0.01)
+  "mode": "default"                       // Optional: "default", "drums", "slow"
+}
+// Response: {"status": "done", "elapsed": 0.45, "files": ["/path/to/output.wav"]}
+```
+
+**Mode presets (when to use):**
+
+| Mode | Release | Best for |
+|------|---------|----------|
+| `default` | 0.1s | Vocals, melodic content |
+| `drums` | 0.3s | Kicks, drums, percussive — prevents pumping and transient bleed |
+| `slow` | 0.5s | Pads, sustained sounds |
+
+**Noise profile:** Use a sample with only noise (no wanted audio), same equipment/settings, 2–3+ seconds. See `noise_reduction/README.md`.
 
 ---
 
@@ -1106,6 +1146,7 @@ scripts/building/py/dist/dsu/dsu-bsroformer --worker --models-dir /tmp/x --devic
 
 ```
 Executables:     dist/dsu/dsu-*       (Mac/Linux: no extension; Windows: dsu-*.exe)
+                 dsu-demucs, dsu-bsroformer, dsu-audio-separator, dsu-denoise
 Workers:         workers/*.py
 Configs:         configs/*.yaml
 Models:          ~/Documents/DSU/ThirdPartyApps/Models (or DSU_MODELS)

@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.wav
+*.mp3
+*.flac
+*.aiff
+*.png
+*.jpg
+*.jpeg
+
+# But keep the noise profile as an example (uncomment if you want to ignore it too)
+# !noise-profile.wav
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Analysis outputs
+analysis_spectrogram.png

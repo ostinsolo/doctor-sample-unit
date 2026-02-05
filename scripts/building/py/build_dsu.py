@@ -174,6 +174,7 @@ PROJECT_PACKAGES = [
     "apollo",
     "apollo.look2hear",
     "apollo.look2hear.models",
+    "noise_reduction",
 ]
 
 # Combine all packages
@@ -325,6 +326,11 @@ def build_dsu():
             'exe_name': 'dsu-audio-separator',
             'description': f'{APP_NAME} - Audio Separator Worker',
         },
+        {
+            'script': os.path.join(workers_dir, 'denoise_worker.py'),
+            'exe_name': 'dsu-denoise',
+            'description': f'{APP_NAME} - Denoise Worker',
+        },
     ]
     
     # Build include_files list
@@ -339,6 +345,10 @@ def build_dsu():
     models_json = os.path.join(PROJECT_ROOT, "models.json")
     if os.path.exists(models_json):
         include_files.append((models_json, "models.json"))
+    # noise_reduction for dsu-denoise worker (envelope-matched spectral subtraction)
+    noise_reduction_path = os.path.join(PROJECT_ROOT, "noise_reduction")
+    if os.path.exists(noise_reduction_path):
+        include_files.append((noise_reduction_path, "noise_reduction"))
     
     # =============================================================================
     # CRITICAL BUILD OPTIONS - from working builds

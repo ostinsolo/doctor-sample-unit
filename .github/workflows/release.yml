@@ -270,7 +270,7 @@ jobs:
             
             ### Key Features
             - **Persistent Workers**: Start once, process many - torch loads once!
-            - **Shared Runtime**: All 3 executables share one `lib/` folder (~2GB vs ~6GB)
+            - **Shared Runtime**: All 4 executables share one `lib/` folder (~2GB vs ~8GB)
             - **JSON Protocol**: stdin/stdout communication for Node.js/Max integration
             - **GPU Acceleration**: CUDA 12.6 (Windows) / MPS Metal (macOS)
             
@@ -301,6 +301,7 @@ jobs:
             ├── dsu-demucs.exe         # Demucs worker (~15KB)
             ├── dsu-bsroformer.exe     # BS-RoFormer worker (~15KB)
             ├── dsu-audio-separator.exe # Audio Separator + Apollo (~15KB)
+            ├── dsu-denoise.exe        # Denoise worker (envelope-matched, no models)
             ├── lib/                   # Shared frozen dependencies (~2GB)
             ├── models/                # Model architectures (bs_roformer, etc.)
             ├── configs/               # Model configs (YAML files)
@@ -324,12 +325,13 @@ jobs:
             
             ---
             
-            ### Supported Models
+            ### Supported Models & Workers
             
             - **Demucs**: htdemucs, htdemucs_ft, htdemucs_6s, mdx, mdx_extra, mdx_q
             - **BS-RoFormer**: 28+ models (vocals, instrumental, denoise, dereverb)
             - **Audio-Separator**: VR, MDX, MDXC architectures
             - **Apollo**: Audio restoration (lew_uni, lew_v2, edm_big)
+            - **Denoise**: Envelope-matched spectral subtraction (amplitude-correlated noise; modes: default, drums, slow)
             
           files: |
             ./artifacts/dsu-win-cuda/dsu-win-cuda.7z

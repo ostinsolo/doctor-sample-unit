@@ -1,0 +1,8 @@
+# Core dependencies for noise reduction
+numpy>=1.26.0
+librosa>=0.11.0
+soundfile>=0.13.0
+scipy>=1.15.0
+
+# Optional: for analysis and visualization (analyze_section.py)
+matplotlib>=3.10.0

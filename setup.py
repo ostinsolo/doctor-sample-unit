@@ -146,6 +146,7 @@ OTHER_PACKAGES = [
     "apollo",
     "apollo.look2hear",
     "apollo.look2hear.models",
+    "noise_reduction",
 ]
 
 ALL_PACKAGES = TORCH_PACKAGES + OTHER_PACKAGES
@@ -250,6 +251,11 @@ executables = [
         os.path.join(SCRIPT_DIR, "workers", "audio_separator_worker.py"),
         base=base,
         target_name="dsu-audio-separator",
+    ),
+    Executable(
+        os.path.join(SCRIPT_DIR, "workers", "denoise_worker.py"),
+        base=base,
+        target_name="dsu-denoise",
     ),
 ]
 
