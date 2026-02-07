@@ -200,7 +200,7 @@ jobs:
       - name: Install FFmpeg (required by torchcodec)
         run: brew install ffmpeg
 
-      - name: Build runtime (mirrors local: build_runtime_mac_mps.sh)
+      - name: "Build runtime (mirrors local: build_runtime_mac_mps.sh)"
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           chmod +x scripts/building/sh/build_runtime_mac_mps.sh
