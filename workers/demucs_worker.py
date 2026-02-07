@@ -285,23 +285,25 @@ def _patch_cli_save_audio_to_soundfile():
     _ds.save_audio = _save
 
 
+_FALLBACK_SRC = 'def __frozen_noop__(*a, **kw): pass\n'
+
 def _patched_getsourcelines(obj):
     try:
         return _original_getsourcelines(obj)
     except (OSError, TypeError):
-        return (["# Source not available in frozen executable\n"], 0)
+        return ([_FALLBACK_SRC], 0)
 
 def _patched_getsource(obj):
     try:
         return _original_getsource(obj)
     except (OSError, TypeError):
-        return "# Source not available in frozen executable\n"
+        return _FALLBACK_SRC
 
 def _patched_findsource(obj):
     try:
         return _original_findsource(obj)
     except (OSError, TypeError):
-        return (["# Source not available in frozen executable\n"], 0)
+        return ([_FALLBACK_SRC], 0)
 
 inspect.getsourcelines = _patched_getsourcelines
 inspect.getsource = _patched_getsource
