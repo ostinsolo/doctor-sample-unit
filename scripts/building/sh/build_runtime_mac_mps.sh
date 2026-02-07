@@ -185,12 +185,16 @@ else:
 # Deactivate
 deactivate 2>/dev/null || true
 
+# Mark runtime platform (avoid mixing Intel vs MPS runtimes)
+echo "mps" > "$RUNTIME_DIR/RUNTIME_PLATFORM.txt"
+
 echo ""
 echo "============================================================================="
 echo "BUILD COMPLETE!"
 echo "============================================================================="
 echo ""
 echo "Runtime location: $RUNTIME_DIR"
+echo "Platform: Apple Silicon (MPS) - RUNTIME_PLATFORM.txt=mps"
 echo "Python executable: $RUNTIME_DIR/bin/python"
 echo ""
 echo "Usage (run workers directly on Mac):"

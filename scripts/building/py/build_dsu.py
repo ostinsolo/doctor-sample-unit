@@ -108,6 +108,9 @@ AUDIO_PACKAGES = [
     
     # ML and inference
     "numpy",
+    "numpy.testing",
+    "numpy.testing._private",
+    "numpy._core.tests",  # Required by scipy->numpy.testing in frozen builds
     # onnx and onnxruntime are optional (not installed to improve performance)
     # They will be added to OPTIONAL_PACKAGES below if available
     "einops",
@@ -174,7 +177,6 @@ PROJECT_PACKAGES = [
     "apollo",
     "apollo.look2hear",
     "apollo.look2hear.models",
-    "noise_reduction",
 ]
 
 # Combine all packages
@@ -345,10 +347,10 @@ def build_dsu():
     models_json = os.path.join(PROJECT_ROOT, "models.json")
     if os.path.exists(models_json):
         include_files.append((models_json, "models.json"))
-    # noise_reduction for dsu-denoise worker (envelope-matched spectral subtraction)
-    noise_reduction_path = os.path.join(PROJECT_ROOT, "noise_reduction")
-    if os.path.exists(noise_reduction_path):
-        include_files.append((noise_reduction_path, "noise_reduction"))
+    # Default noise profile for dsu-denoise (all arch builds)
+    noise_profile = os.path.join(PROJECT_ROOT, "noise_reduction", "noise-profile.wav")
+    if os.path.exists(noise_profile):
+        include_files.append((noise_profile, "noise-profile.wav"))
     
     # =============================================================================
     # CRITICAL BUILD OPTIONS - from working builds
@@ -362,11 +364,9 @@ def build_dsu():
         "zip_include_packages": [],
         "zip_exclude_packages": "*",  # Don't zip anything - prevents path issues
         
-        # Bytecode optimization: optimize=1 removes assertions (safe for torch)
-        # optimize=2 also removes docstrings (may break some torch introspection)
-        # For Intel Mac, we can use optimize=1 to speed up build slightly
-        # Set via environment variable: DSU_BUILD_OPTIMIZE=1 or 2 (default: 0 for safety)
-        "optimize": int(os.environ.get("DSU_BUILD_OPTIMIZE", "0")),
+        # Bytecode optimization: optimize=1 removes assertions (safe). optimize=2 removes docstrings - breaks demucs/bsroformer
+        # Set DSU_BUILD_OPTIMIZE=0 to disable, or 2 to try (may break torch introspection)
+        "optimize": int(os.environ.get("DSU_BUILD_OPTIMIZE", "1")),
         
         # Build in output directory
         "build_exe": output_dir,
@@ -412,30 +412,33 @@ def build_dsu():
         os.makedirs(lib_dir, exist_ok=True)
         print(f"  Created lib directory: {lib_dir}")
         
-        # CRITICAL: Create dummy libomp.dylib if sklearn's version is missing
-        # This prevents cx_Freeze from failing when trying to copy sklearn's libomp.dylib
-        # (We removed it earlier to prevent OpenMP conflicts)
-        # NOTE: We can't import sklearn because it fails without libomp.dylib,
-        # so we construct the path directly using sys.prefix (runtime environment)
+        # CRITICAL: Ensure sklearn has libomp.dylib before cx_Freeze (avoids copy error)
+        # - Intel: MUST use libiomp5 (torch's), NOT original libomp (LLVM) - build_runtime_mac_intel.sh does this
+        # - ARM: build_runtime_mac_mps.sh uses torch's libomp
+        # - If missing: create dummy so cx_Freeze doesn't fail (runtime may fail - run build_runtime)
         try:
-            # Construct sklearn path directly (can't import sklearn - it needs libomp.dylib)
+            import platform
             sklearn_base = os.path.join(sys.prefix, "lib", "python3.10", "site-packages", "sklearn")
             sklearn_omp = os.path.join(sklearn_base, ".dylibs", "libomp.dylib")
-            
+            torch_iomp5 = os.path.join(sys.prefix, "lib", "python3.10", "site-packages", "torch", "lib", "libiomp5.dylib")
             if not os.path.exists(sklearn_omp):
-                # Create .dylibs directory if it doesn't exist
                 dylibs_dir = os.path.dirname(sklearn_omp)
                 os.makedirs(dylibs_dir, exist_ok=True)
-                # Create an empty dummy file (cx_Freeze will copy it but it won't be used)
                 with open(sklearn_omp, 'wb') as f:
-                    f.write(b'')  # Empty file
-                print(f"  Created dummy libomp.dylib for sklearn at: {sklearn_omp}")
-                print(f"    (This prevents cx_Freeze copy error - file is empty and won't cause OpenMP conflicts)")
+                    f.write(b'')  # Dummy - run build_runtime_mac_intel.sh for libiomp5
+                print(f"  Created dummy libomp.dylib (run build_runtime_mac_intel.sh for libiomp5 on Intel)")
             else:
-                print(f"  libomp.dylib already exists at: {sklearn_omp}")
+                size = os.path.getsize(sklearn_omp)
+                if platform.machine() == "x86_64" and os.path.isfile(torch_iomp5):
+                    iomp5_size = os.path.getsize(torch_iomp5)
+                    if size == iomp5_size:
+                        print(f"  sklearn libomp.dylib: libiomp5 (Intel) OK ({size} bytes)")
+                    else:
+                        print(f"  WARNING: sklearn libomp ({size} bytes) != torch libiomp5 ({iomp5_size}). Run build_runtime_mac_intel.sh to fix.")
+                else:
+                    print(f"  libomp.dylib exists ({size} bytes)" + (" - OK" if size > 0 else " - dummy"))
         except Exception as e:
-            # If we can't create it, warn but continue (might not be needed)
-            print(f"  WARNING: Could not create dummy libomp.dylib: {e}")
+            print(f"  WARNING: Could not check libomp.dylib: {e}")
     
     # Add project root to Python path so apollo module can be found
     if PROJECT_ROOT not in sys.path:
@@ -521,22 +524,28 @@ def build_dsu():
         if not zlib_copied:
             print(f"  WARNING: zlib shared library not found (tried: {zlib_candidates}); zipimport may fail at runtime")
         
-        # ARM only: Replace dummy libomp.dylib with torch's real one
-        # - Dummy exists to satisfy cx_Freeze (sklearn's .dylibs removed to avoid OpenMP conflict)
-        # - Intel: torch uses libiomp5.dylib; we remove all libomp to avoid conflict - do NOT copy
-        # - ARM: torch uses libomp.dylib; libtorch_cpu.dylib needs real libomp at lib/libomp.dylib
+        # Post-build OpenMP fix (macOS)
         import platform
         if platform.machine() == "arm64":
+            # ARM: torch has libomp; copy to lib/ for libtorch_cpu.dylib
             torch_omp = os.path.join(lib_dir, "torch", "lib", "libomp.dylib")
             lib_omp_dest = os.path.join(lib_dir, "libomp.dylib")
             if os.path.isfile(torch_omp) and os.path.getsize(torch_omp) > 0:
                 try:
                     shutil.copy2(torch_omp, lib_omp_dest)
-                    print(f"  Replaced lib/libomp.dylib with torch's libomp (ARM: required by libtorch_cpu.dylib)")
+                    print(f"  Copied torch libomp to lib/ (ARM: libtorch_cpu.dylib)")
                 except Exception as e:
                     print(f"  WARNING: Could not copy torch libomp to lib/: {e}")
-            else:
-                print(f"  WARNING: torch libomp not found at {torch_omp}")
+        elif platform.machine() == "x86_64":
+            # Intel: torch has libiomp5. If sklearn has dummy libomp, replace with libiomp5
+            sk_omp = os.path.join(lib_dir, "sklearn", ".dylibs", "libomp.dylib")
+            torch_iomp5 = os.path.join(lib_dir, "torch", "lib", "libiomp5.dylib")
+            if os.path.isfile(sk_omp) and os.path.getsize(sk_omp) == 0 and os.path.isfile(torch_iomp5):
+                try:
+                    shutil.copy2(torch_iomp5, sk_omp)
+                    print(f"  Replaced dummy sklearn libomp with torch libiomp5 (Intel)")
+                except Exception as e:
+                    print(f"  WARNING: Could not copy libiomp5 to sklearn: {e}")
     
     # =============================================================================
     # Post-build: Copy llvmlite.libs (Windows only)
@@ -545,6 +554,60 @@ def build_dsu():
         print()
         print("Post-build: Copying llvmlite.libs...")
         copy_llvmlite_libs(output_dir)
+    
+    # =============================================================================
+    # Post-build: Remove unnecessary files (not needed at runtime, reduces size)
+    # =============================================================================
+    lib_dir = os.path.join(output_dir, "lib")
+    total_removed = 0
+    if os.path.isdir(lib_dir):
+        # 1. Remove test directories (package.tests, package.test)
+        # Skip numpy._core.tests - scipy->numpy.testing imports it at runtime in frozen builds
+        for root, dirs, _ in os.walk(lib_dir, topdown=False):
+            for d in dirs:
+                if d in ("tests", "test"):
+                    path = os.path.join(root, d)
+                    if os.path.isdir(path):
+                        # Keep numpy._core.tests (scipy array_api compat needs it)
+                        if "numpy" in root and ("_core" in root or os.path.basename(root) == "core"):
+                            continue
+                        try:
+                            size = sum(
+                                os.path.getsize(os.path.join(r, f))
+                                for r, _, files in os.walk(path) for f in files
+                            )
+                            shutil.rmtree(path)
+                            total_removed += size
+                        except OSError:
+                            pass
+        # 2. Remove Cython/C source (.pyx, .pxd, .c, .h). Keep .pyi - librosa lazy_loader needs them at runtime
+        for root, dirs, files in os.walk(lib_dir, topdown=False):
+            for f in files:
+                if f.endswith((".pyx", ".pxd", ".c", ".h")):
+                    path = os.path.join(root, f)
+                    try:
+                        total_removed += os.path.getsize(path)
+                        os.remove(path)
+                    except OSError:
+                        pass
+        # 3. Remove examples, doc, docs, include directories
+        for root, dirs, _ in os.walk(lib_dir, topdown=False):
+            for d in dirs:
+                if d in ("examples", "example", "doc", "docs", "include"):
+                    path = os.path.join(root, d)
+                    if os.path.isdir(path):
+                        try:
+                            size = sum(
+                                os.path.getsize(os.path.join(r, f))
+                                for r, _, files in os.walk(path) for f in files
+                            )
+                            shutil.rmtree(path)
+                            total_removed += size
+                        except OSError:
+                            pass
+        if total_removed > 0:
+            print()
+            print(f"Post-build: Removed ~{total_removed / (1024*1024):.1f} MB (tests, .pyx/.c/.h, examples, doc, include)")
     
     # Report results
     print()

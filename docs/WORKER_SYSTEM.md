@@ -176,7 +176,7 @@ Mac ARM uses **PyTorch 2.10** (not 2.5). See `requirements-mac-mps.txt`. Validat
 
 ### Denoise Worker Commands
 
-The denoise worker uses **envelope-matched spectral subtraction** for **amplitude-correlated noise** — noise that follows the audio’s amplitude envelope (e.g. hiss that gets louder when the signal gets louder). No models are loaded; startup is fast.
+The denoise worker uses **envelope-matched spectral subtraction** for **amplitude-correlated noise** — noise that follows the audio's amplitude envelope (e.g. hiss that gets louder when the signal gets louder). No models are loaded; startup is fast.
 
 **Experiment context:** This technique was chosen after testing others that failed on amplitude-correlated noise: spectral gating, noisereduce (stationary/non-stationary), DeepFilterNet3, Demucs, VoiceFixer, multi-band de-hiss. Envelope-matched subtraction works because it scales the noise estimate with the audio envelope. See `noise_reduction/README.md` and `noise_reduction/PROJECT_SUMMARY.md`.
 
@@ -300,6 +300,7 @@ So you can both see **high CPU usage (600–800%)** when on CPU and **good MPS u
 2. **Pre-load models** - Load common models in background during startup
 3. **Batch by model** - Run all jobs for model-A, then model-B (avoid reloads)
 4. **Model caching** - Workers automatically cache loaded models
+5. **MPS: faster architecture switching** - On GPU (MPS/CUDA), the Node.js WorkerManager stops conflicting workers before starting a new one (e.g. bsroformer → audio_separator). That causes 5–10+ second restarts. For **16GB+ unified memory** (M1 Pro/Max, M2/M3 Pro/Max), add to `~/.dsu/runtime_policy.json`: `{"worker": {"disable_conflict_stopping": true}}`. Workers stay alive when switching; switching becomes much faster. See [RUNTIME_POLICY.md](RUNTIME_POLICY.md).
 
 ### Sequential Workflow Performance
 
@@ -1128,7 +1129,7 @@ dsu-bsroformer: error: unrecognized arguments: --max-cached-models 2
    ```bash
    scripts/building/sh/runtime/bin/python scripts/building/py/build_dsu.py
    ```
-   Output: `scripts/building/py/dist/dsu/` (dsu-demucs, dsu-bsroformer, dsu-audio-separator).
+   Output: `scripts/building/py/dist/dsu/` (dsu-demucs, dsu-bsroformer, dsu-audio-separator, dsu-denoise).
 
 **Mac (Intel):** Use `build_runtime_mac_intel.sh` instead of `build_runtime_mac_mps.sh`, then same `build_dsu.py` step.
 

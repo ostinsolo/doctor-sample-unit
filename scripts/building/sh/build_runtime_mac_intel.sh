@@ -146,15 +146,16 @@ else
         uv pip install 'cx-Freeze==6.15.16' 'torch==2.2.2' 'torchaudio==2.2.2' 'torchvision==0.17.2'
     
         # Install core dependencies from requirements file (skip audio-separator for now)
-        # Use uv with --only-binary for packages that have wheels (like build.sh)
+        # Note: demucs may not have wheels for Intel Mac; if this fails, fallback installs it
         echo "Installing core dependencies with uv..."
-        uv pip install --only-binary=:all: -r "$SCRIPT_DIR/requirements-mac-intel.txt" || {
-            echo "Some packages don't have wheels. Installing with pinned versions..."
+        REQ_FILE="$(cd "$SCRIPT_DIR/../../.." && pwd)/requirements-mac-intel.txt"
+        uv pip install --only-binary=:all: -r "$REQ_FILE" || {
+            echo "Some packages (e.g. demucs) lack Intel wheels. Installing with fallback..."
             uv pip install torch==2.2.2 torchaudio==2.2.2 "numpy<2" scipy soundfile \
                 librosa==0.10.1 llvmlite==0.41.1 numba==0.58.1 \
                 tqdm pyyaml omegaconf ml_collections \
                 einops rotary-embedding-torch beartype loralib matplotlib \
-                demucs julius diffq resampy pydub samplerate
+                demucs julius diffq resampy pydub samplerate spafe
         }
         
         # Ensure demucs is installed (required for demucs_worker.py)
@@ -168,13 +169,13 @@ else
         echo ""
         echo "Installing audio-separator (with --no-deps for Intel Mac compatibility)..."
         
-        # CRITICAL: Remove duplicate OpenMP library to prevent conflicts
-        # Keep only Intel's libiomp5.dylib, remove LLVM's libomp.dylib
-        # This prevents thread scheduling conflicts and improves performance by ~34%
-        # Based on build.sh approach - remove all libomp.dylib files from runtime
+        # CRITICAL: Fix OpenMP for Intel Mac - use libiomp5 (Intel's), NOT libomp (LLVM's)
+        # - Torch uses libiomp5.dylib (Intel's OpenMP); sklearn expects libomp.dylib at .dylibs/
+        # - Loading BOTH libiomp5 and libomp causes conflicts (IntelOMP vs LLVM OMP)
+        # - Strategy: Remove all libomp.dylib, copy torch's libiomp5 to sklearn as libomp.dylib
+        #   (OpenMP API is standardized; libiomp5 implements same symbols - single OpenMP in process)
         echo ""
-        echo "Removing conflicting OpenMP library (libomp.dylib from sklearn)..."
-        echo "  (Following build.sh approach: remove all libomp.dylib, keep only libiomp5.dylib)"
+        echo "Fixing OpenMP for Intel Mac (use libiomp5 only, no libomp)..."
         REMOVED_COUNT=0
         for omp_file in $(find "$RUNTIME_DIR" -name "libomp.dylib" 2>/dev/null); do
             echo "  Removing: $omp_file"
@@ -182,11 +183,17 @@ else
             REMOVED_COUNT=$((REMOVED_COUNT + 1))
         done
         if [ $REMOVED_COUNT -gt 0 ]; then
-            echo "  ✅ Removed $REMOVED_COUNT conflicting libomp.dylib files"
-            echo "     This prevents OpenMP conflicts and improves performance by ~34%"
-            echo "     (sklearn will use system/torch OpenMP instead)"
-        else
-            echo "  No conflicting libomp.dylib found (or already removed)"
+            echo "  Removed $REMOVED_COUNT libomp.dylib (avoid conflict with libiomp5)"
+        fi
+        # Provide libiomp5 for sklearn (as libomp.dylib) - single OpenMP impl, no conflict
+        SKLEARN_DYLIBS=$(find "$RUNTIME_DIR" -path "*sklearn*" -type d -name ".dylibs" 2>/dev/null | head -1)
+        TORCH_LIBIOMP5=$(find "$RUNTIME_DIR" -path "*torch*" -name "libiomp5.dylib" 2>/dev/null | head -1)
+        if [ -n "$SKLEARN_DYLIBS" ] && [ -n "$TORCH_LIBIOMP5" ] && [ -f "$TORCH_LIBIOMP5" ]; then
+            mkdir -p "$SKLEARN_DYLIBS"
+            cp "$TORCH_LIBIOMP5" "$SKLEARN_DYLIBS/libomp.dylib"
+            echo "  ✅ Copied torch's libiomp5 to sklearn/.dylibs/libomp.dylib (Intel OpenMP only)"
+        elif [ -n "$SKLEARN_DYLIBS" ]; then
+            echo "  WARNING: torch libiomp5.dylib not found - sklearn may fail. Re-run after torch install."
         fi
         uv pip install 'audio-separator==0.41.0' --no-deps || uv pip install 'audio-separator>=0.39.0' --no-deps || echo "WARNING: Could not install audio-separator, some features may be unavailable"
     
@@ -198,6 +205,7 @@ else
         python -c "import torch; print(f'PyTorch: {torch.__version__}')"
         python -c "import torch; print(f'MPS available: {torch.backends.mps.is_available() if hasattr(torch.backends, \"mps\") else False}')"
         python -c "import numpy; print(f'NumPy: {numpy.__version__}')"
+        python -c "import sklearn; print(f'scikit-learn: {sklearn.__version__}')" || echo "WARNING: sklearn failed to import - check libiomp5 was copied to sklearn/.dylibs/"
         python -c "import librosa; print(f'Librosa: {librosa.__version__}')"
         python -c "import soundfile; print(f'SoundFile: {soundfile.__version__}')"
         python3 << 'PYEOF'
@@ -217,21 +225,36 @@ PYEOF
         python3 << 'PYEOF'
 try:
     import audio_separator
-    v = getattr(audio_separator, '__version__', '(no version)')
+    v = getattr(audio_separator, '__version__', None)
+    if v is None:
+        import importlib.metadata
+        v = importlib.metadata.version('audio-separator')
     print(f'Audio-Separator: {v}')
-except ImportError:
-    print('Audio-Separator: Not available (optional on Intel Mac)')
+except (ImportError, Exception) as e:
+    print(f'Audio-Separator: Not available ({e})')
 PYEOF
+        # utils.denoise (denoise worker) - uses shared runtime deps: numpy, librosa, soundfile, scipy
+        PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+        PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH" python3 -c "
+try:
+    from utils.denoise import denoise_audio
+    print('utils.denoise: OK (shared runtime, dsu-denoise)')
+except ImportError as e:
+    print(f'utils.denoise: {e}')
+"
     
         # Deactivate
         deactivate 2>/dev/null || true
     
+        # Mark runtime platform (avoid mixing Intel vs MPS runtimes)
+        echo "intel" > "$RUNTIME_DIR/RUNTIME_PLATFORM.txt"
         echo ""
         echo "============================================================================="
         echo "BUILD COMPLETE!"
         echo "============================================================================="
         echo ""
         echo "Runtime location: $RUNTIME_DIR"
+        echo "Platform: Intel (x86_64) - RUNTIME_PLATFORM.txt=intel"
         echo "Python executable: $RUNTIME_DIR/bin/python"
         echo ""
 fi

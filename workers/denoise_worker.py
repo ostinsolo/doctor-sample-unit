@@ -2,8 +2,8 @@
 """
 Denoise DSU Worker - Envelope-Matched Noise Reduction
 
-Lightweight worker using noise_reduction/denoise.py.
-No heavy models; envelope-matched spectral subtraction only.
+Lightweight worker using utils.denoise (envelope-matched spectral subtraction).
+No heavy models; uses shared runtime deps (librosa, soundfile, numpy).
 Uses JSON-over-stdin/stdout protocol for Node.js integration.
 
 Usage:
@@ -25,20 +25,17 @@ from contextlib import redirect_stdout
 from io import StringIO
 
 # =============================================================================
-# PATH SETUP - Ensure noise_reduction is importable
+# PATH SETUP - utils is bundled via packages (frozen) or from project root (dev)
 # =============================================================================
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# Parent of workers/ = project root (main/)
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
 if getattr(sys, "frozen", False):
-    # Frozen exe: exe dir is output root (dist/dsu/)
     EXE_DIR = os.path.dirname(sys.executable)
     if EXE_DIR not in sys.path:
         sys.path.insert(0, EXE_DIR)
 else:
-    # Development: project root contains noise_reduction/
     if PROJECT_ROOT not in sys.path:
         sys.path.insert(0, PROJECT_ROOT)
 
@@ -120,7 +117,7 @@ def worker_mode():
     send_json({"status": "loading", "message": "Initializing denoise worker..."})
     
     try:
-        from noise_reduction.denoise import denoise_audio
+        from utils.denoise import denoise_audio
     except ImportError as e:
         send_json({"status": "error", "message": f"Failed to import denoiser: {str(e)}"})
         return 1
@@ -179,6 +176,11 @@ def worker_mode():
             elif cmd == "denoise":
                 input_path = job.get("input")
                 noise_path = job.get("noise_profile") or job.get("noise_path")
+                # Use bundled default when frozen and no profile specified
+                if not noise_path and getattr(sys, "frozen", False):
+                    bundled = os.path.join(EXE_DIR, "noise-profile.wav")
+                    if os.path.exists(bundled):
+                        noise_path = bundled
                 output_path = job.get("output")
                 subtraction_factor = job.get("subtraction_factor", 0.9)
                 release_time = job.get("release_time")
@@ -269,7 +271,7 @@ Modes:
   --drums  (300ms release) - kicks, drums, percussive; prevents pumping
   --slow   (500ms release) - pads, sustained sounds
 
-See docs/WORKER_SYSTEM.md and noise_reduction/README.md for details.
+See docs/WORKER_SYSTEM.md and utils/denoise.py for details.
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -282,7 +284,7 @@ See docs/WORKER_SYSTEM.md and noise_reduction/README.md for details.
         sys.exit(worker_mode())
     
     # CLI fallback: dsu-denoise <audio> <noise_profile> [output] [--drums|--slow]
-    from noise_reduction.denoise import denoise_audio
+    from utils.denoise import denoise_audio
     args_list = [a for a in remaining if not a.startswith("--")]
     flags = [a for a in remaining if a.startswith("--")]
     if len(args_list) < 2:

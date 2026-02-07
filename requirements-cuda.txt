@@ -31,7 +31,7 @@ samplerate==0.1.0
 pydub>=0.25.0
 scipy>=1.10.0
 resampy>=0.4.0
-asteroid
+# asteroid: training-only (Bandit loss), lazy - not needed for inference
 
 # Demucs (workers use soundfile for I/O; torchcodec has no Windows wheels on PyPI)
 demucs>=4.0.0
@@ -52,10 +52,8 @@ julius>=0.2.7
 diffq>=0.2.4              # Required for Demucs quantized models (mdx_q, mdx_extra_q)
 beartype>=0.18.5,<0.19.0  # Required for BS-RoFormer
 rotary-embedding-torch>=0.6.1,<0.7.0  # Required for BS-RoFormer
-asteroid                  # Required for Bandit/MDX23c models
-spafe                     # Required by Bandit (fbanks)
-pedalboard                # Required by Bandit data module
-torch_audiomentations     # Required by Bandit augmentations
+# asteroid, pedalboard, torch_audiomentations: training-only, lazy - not needed for inference
+spafe                     # Required by Bandit (fbanks) - inference
 triton-windows            # Required by SageAttention on Windows
 sageattention             # Optional: SageAttention CUDA kernels
 

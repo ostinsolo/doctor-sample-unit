@@ -15,6 +15,9 @@ Example:
   "global": {
     "max_cached_models": 1
   },
+  "worker": {
+    "disable_conflict_stopping": false
+  },
   "demucs": {
     "max_cached_models": 2
   },
@@ -29,6 +32,22 @@ Example:
   }
 }
 ```
+
+### worker.disable_conflict_stopping (Node.js WorkerManager)
+
+On GPU (MPS/CUDA), the WorkerManager stops conflicting workers before starting a new one to avoid OOM on 8GB VRAM (e.g. BSRoformer + AudioSep = ~6–9GB). That causes a full process restart when switching architectures (bsroformer ↔ audio_separator), adding 5–10+ seconds per switch.
+
+For **16GB+ unified memory (M1 Pro/Max, M2/M3 Pro/Max)** or systems with more VRAM, set:
+
+```json
+{
+  "worker": {
+    "disable_conflict_stopping": true
+  }
+}
+```
+
+Workers will then stay alive when you switch between models/architectures. Switching becomes much faster (no stop + restart). **Risk:** If you run multiple heavy workers at once, you may hit OOM. Use only if you have sufficient memory.
 
 ## Resource-Aware System (Orchestrator)
 

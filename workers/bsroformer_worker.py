@@ -205,6 +205,7 @@ def _should_use_mps():
         # MPS not working, don't use it
         return False
 
+
 # ============================================================================
 # HELPER: Setup CPU threading optimizations (shared between CLI and worker mode)
 # ============================================================================
@@ -1530,6 +1531,26 @@ def _setup_shutdown_handlers():
 # WORKER MODE
 # ============================================================================
 
+def _install_dummy_pytorch_lightning():
+    """Install dummy pytorch_lightning when not available (Bandit models need LightningModule base)."""
+    if "pytorch_lightning" in sys.modules:
+        return
+    import types
+    import torch.nn as nn
+    pl_mod = types.ModuleType("pytorch_lightning")
+    # Bandit's BandSplitWrapperBase extends pl.LightningModule; nn.Module suffices for inference
+    pl_mod.LightningModule = nn.Module
+    # Bandit core __init__ imports STEP_OUTPUT from pytorch_lightning.utilities.types
+    pl_utils = types.ModuleType("pytorch_lightning.utilities")
+    pl_types = types.ModuleType("pytorch_lightning.utilities.types")
+    pl_types.STEP_OUTPUT = None
+    pl_utils.types = pl_types
+    pl_mod.utilities = pl_utils
+    sys.modules["pytorch_lightning"] = pl_mod
+    sys.modules["pytorch_lightning.utilities"] = pl_utils
+    sys.modules["pytorch_lightning.utilities.types"] = pl_types
+
+
 def worker_mode(models_dir=None, device="cpu", configs_dir=None, max_cached_models=None):
     """
     Persistent worker mode for Node.js integration.
@@ -1547,6 +1568,12 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None, max_cached_mode
     """
     global CONFIGS_DIR
     CONFIGS_DIR = configs_dir
+    
+    # Install dummy pytorch_lightning before any Bandit model import (inference-only build)
+    try:
+        import pytorch_lightning  # noqa: F401
+    except ImportError:
+        _install_dummy_pytorch_lightning()
     
     # Install shutdown handlers
     _setup_shutdown_handlers()
@@ -1842,7 +1869,6 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None, max_cached_mode
                         finally:
                             shutil.rmtree(base_temp_dir, ignore_errors=True)
                     except Exception as e:
-                        import traceback
                         send_json({"status": "error", "message": str(e), "traceback": traceback.format_exc()})
                     continue
 
@@ -1936,7 +1962,6 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None, max_cached_mode
                             sys.stdout.flush()
                         
                     except Exception as e:
-                        import traceback
                         error_msg = f"Failed to load model: {str(e)}"
                         error_trace = traceback.format_exc()
                         send_json({"status": "error", "message": error_msg, "traceback": error_trace})
@@ -2022,7 +2047,6 @@ def worker_mode(models_dir=None, device="cpu", configs_dir=None, max_cached_mode
                     })
                     
                 except Exception as e:
-                    import traceback
                     error_msg = f"Separation failed: {str(e)}"
                     error_trace = traceback.format_exc()
                     send_json({

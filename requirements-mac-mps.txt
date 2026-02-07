@@ -49,10 +49,8 @@ torchcodec>=0.5
 # -----------------------------------------------------------------------------
 # Model Dependencies
 # -----------------------------------------------------------------------------
-asteroid  # Required for Bandit/MDX23c models
-spafe                     # Required by Bandit (fbanks)
-pedalboard                # Required by Bandit data module
-torch_audiomentations     # Required by Bandit augmentations
+# asteroid, pedalboard, torch_audiomentations: training-only, lazy - not needed for inference
+spafe                     # Required by Bandit (fbanks) - inference
 einops>=0.7.0
 julius>=0.2.7
 diffq>=0.2.4              # Required for Demucs quantized models

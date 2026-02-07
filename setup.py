@@ -146,7 +146,6 @@ OTHER_PACKAGES = [
     "apollo",
     "apollo.look2hear",
     "apollo.look2hear.models",
-    "noise_reduction",
 ]
 
 ALL_PACKAGES = TORCH_PACKAGES + OTHER_PACKAGES

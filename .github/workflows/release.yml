@@ -200,27 +200,26 @@ jobs:
       - name: Install FFmpeg (required by torchcodec)
         run: brew install ffmpeg
 
-      - name: Install dependencies
+      - name: Build runtime (mirrors local: build_runtime_mac_mps.sh)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          uv venv
-          source .venv/bin/activate
-          uv pip install -r requirements-mac-mps.txt
-          uv pip install audio-separator==0.41.0 --no-deps
-          # Mac ARM: samplerate 0.1.0 ships x86_64-only libsamplerate.dylib; use 0.2.3+ (universal2, no dylib)
-          uv pip install 'samplerate>=0.2.3' --force-reinstall
+          chmod +x scripts/building/sh/build_runtime_mac_mps.sh
+          ./scripts/building/sh/build_runtime_mac_mps.sh -y
 
       - name: Build DSU
         run: |
-          source .venv/bin/activate
+          source scripts/building/sh/runtime/bin/activate
           python scripts/building/py/build_dsu.py
 
       - name: Quick smoke test
         run: |
           echo "Testing executables exist..."
           ls -la scripts/building/py/dist/dsu/dsu-*
+          echo "Expect 4 workers: dsu-demucs, dsu-bsroformer, dsu-audio-separator, dsu-denoise"
           echo "Testing dsu-demucs can start..."
           scripts/building/py/dist/dsu/dsu-demucs --help || echo "Help not implemented, checking worker mode..."
+          echo "Testing dsu-denoise can start..."
+          scripts/building/py/dist/dsu/dsu-denoise --help || echo "Help not implemented, checking worker mode..."
 
       - name: Create archive
         run: |
@@ -246,8 +245,43 @@ jobs:
         with:
           path: ./artifacts
 
+      - name: Fetch Intel build from latest release
+        run: |
+          mkdir -p ./artifacts/dsu-mac-intel
+          LATEST=$(curl -sL -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r '.tag_name // empty')
+          if [ -n "$LATEST" ]; then
+            ASSET_URL=$(curl -sL -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/latest" | \
+              jq -r '.assets[] | select(.name == "dsu-mac-intel.tar.gz") | .url // empty')
+            if [ -n "$ASSET_URL" ]; then
+              curl -sL -H "Accept: application/octet-stream" -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                "$ASSET_URL" -o ./artifacts/dsu-mac-intel/dsu-mac-intel.tar.gz
+              echo "Fetched dsu-mac-intel.tar.gz from $LATEST"
+            else
+              echo "No dsu-mac-intel.tar.gz in latest release ($LATEST)"
+            fi
+          else
+            echo "No previous release found"
+          fi
+
       - name: List artifacts
         run: find ./artifacts -type f
+
+      - name: Prepare release files list
+        id: release_files
+        run: |
+          FILES="./artifacts/dsu-win-cuda/dsu-win-cuda.7z
+          ./artifacts/dsu-win-cpu/dsu-win-cpu.zip
+          ./artifacts/dsu-mac-arm/dsu-mac-arm.tar.gz"
+          if [ -f "./artifacts/dsu-mac-intel/dsu-mac-intel.tar.gz" ]; then
+            FILES="$FILES
+          ./artifacts/dsu-mac-intel/dsu-mac-intel.tar.gz"
+            echo "Intel build included"
+          fi
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Determine version
         id: version
@@ -290,7 +324,7 @@ jobs:
             | **Windows CUDA** | `dsu-win-cuda.7z` | NVIDIA CUDA 12.6 | ~2GB |
             | **Windows CPU** | `dsu-win-cpu.zip` | None | ~800MB |
             | **macOS ARM** | `dsu-mac-arm.tar.gz` | MPS (Metal) | ~1.5GB |
-            | **macOS Intel** | `dsu-mac-intel.tar.gz` | CPU | ~1.5GB (manual build) |
+            | **macOS Intel** | `dsu-mac-intel.tar.gz` | CPU | ~1.5GB (from latest release) |
             
             ---
             
@@ -333,9 +367,6 @@ jobs:
             - **Apollo**: Audio restoration (lew_uni, lew_v2, edm_big)
             - **Denoise**: Envelope-matched spectral subtraction (amplitude-correlated noise; modes: default, drums, slow)
             
-          files: |
-            ./artifacts/dsu-win-cuda/dsu-win-cuda.7z
-            ./artifacts/dsu-win-cpu/dsu-win-cpu.zip
-            ./artifacts/dsu-mac-arm/dsu-mac-arm.tar.gz
+          files: ${{ steps.release_files.outputs.files }}
           draft: false
           prerelease: false

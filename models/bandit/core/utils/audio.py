@@ -392,7 +392,7 @@ class LinearFader(BaseFader):
         # using nn.Parameters allows lightning to take care of devices for us
         self.register_buffer(
                 "standard_window",
-                torch.concat([in_fade, center_ones, out_fade])
+                torch.concat([in_fade, center_ones, out_fade]).float()
         )
 
         self.fade_edge_frames = fade_edge_frames
@@ -438,9 +438,10 @@ class OverlapAddFader(BaseFader):
         )
 
         self.register_buffer(
-            "standard_window", torch.windows.__dict__[window_type](
-                    self.chunk_size, sym=False,  # dtype=torch.float64
-            ) / self.hop_multiplier
+            "standard_window", (
+                torch.windows.__dict__[window_type](self.chunk_size, sym=False)
+                / self.hop_multiplier
+            ).float()
         )
 
 

@@ -13,8 +13,7 @@ from typing import (
 import pytorch_lightning as pl
 import torch
 import torchaudio as ta
-import torchmetrics as tm
-from asteroid import losses as asteroid_losses
+# asteroid: training-only (loss), lazy via _get_asteroid_losses()
 # from deepspeed.ops.adam import DeepSpeedCPUAdam
 # from geoopt import optim as gooptim
 from pytorch_lightning.utilities.types import STEP_OUTPUT
@@ -22,9 +21,57 @@ from torch import nn, optim
 from torch.optim import lr_scheduler
 from torch.optim.lr_scheduler import LRScheduler
 
-from models.bandit.core import loss, metrics as metrics_, model
+# Model needed for inference (parse_model_config). Loss/metrics only for LightningSystem (training).
+from models.bandit.core import model
+
+_loss_module = None
+_metrics_module = None
+_tm_module = None
+_asteroid_losses_module = None
+_augmentation_module = None
+
+
+def _get_asteroid_losses():
+    global _asteroid_losses_module
+    if _asteroid_losses_module is None:
+        from asteroid import losses as al
+        _asteroid_losses_module = al
+    return _asteroid_losses_module
+
+
+def _get_augmentation():
+    """Lazy load augmentation (torch_audiomentations) - training only."""
+    global _augmentation_module
+    if _augmentation_module is None:
+        from models.bandit.core.data import augmentation as aug
+        _augmentation_module = aug
+    return _augmentation_module
+
+
+def _get_loss():
+    global _loss_module
+    if _loss_module is None:
+        from models.bandit.core import loss
+        _loss_module = loss
+    return _loss_module
+
+
+def _get_metrics():
+    global _metrics_module
+    if _metrics_module is None:
+        from models.bandit.core import metrics as m
+        _metrics_module = m
+    return _metrics_module
+
+
+def _get_tm():
+    global _tm_module
+    if _tm_module is None:
+        import torchmetrics as tm
+        _tm_module = tm
+    return _tm_module
 from models.bandit.core.data._types import BatchedDataDict
-from models.bandit.core.data.augmentation import BaseAugmentor, StemAugmentor
+# augmentation (torch_audiomentations): training-only, lazy via _get_augmentation()
 from models.bandit.core.utils import audio as audio_
 from models.bandit.core.utils.audio import BaseFader
 
@@ -117,7 +164,7 @@ def _parse_legacy_loss_config(config: ConfigDict) -> nn.Module:
     name = config["name"]
 
     if name == "HybridL1Loss":
-        return loss.TimeFreqL1Loss(**config["kwargs"])
+        return _get_loss().TimeFreqL1Loss(**config["kwargs"])
 
     raise NameError
 
@@ -128,7 +175,7 @@ def parse_loss_config(config: ConfigDict) -> nn.Module:
     if name in _LEGACY_LOSS_NAMES:
         return _parse_legacy_loss_config(config)
 
-    for module in [loss, nn.modules.loss, asteroid_losses]:
+    for module in [_get_loss(), nn.modules.loss, _get_asteroid_losses()]:
         if name in module.__dict__:
             # print(config["kwargs"])
             return module.__dict__[name](**config["kwargs"])
@@ -136,16 +183,18 @@ def parse_loss_config(config: ConfigDict) -> nn.Module:
     raise NameError
 
 
-def get_metric(config: ConfigDict) -> tm.Metric:
+def get_metric(config: ConfigDict):
+    tm = _get_tm()
     name = config["name"]
 
-    for module in [tm, metrics_]:
+    for module in [tm, _get_metrics()]:
         if name in module.__dict__:
             return module.__dict__[name](**config["kwargs"])
     raise NameError
 
 
-def parse_metric_config(config: Dict[str, ConfigDict]) -> tm.MetricCollection:
+def parse_metric_config(config: Dict[str, ConfigDict]):
+    tm = _get_tm()
     metrics = {}
 
     for metric in config:
@@ -204,9 +253,10 @@ class LightningSystem(pl.LightningModule):
         else:
             self.fader = None
 
-        self.augmentation: Optional[BaseAugmentor]
+        aug_mod = _get_augmentation()
+        self.augmentation: Optional[Any]
         if config.get("augmentation", None) is not None:
-            self.augmentation = StemAugmentor(**config["augmentation"])
+            self.augmentation = aug_mod.StemAugmentor(**config["augmentation"])
         else:
             self.augmentation = None
 
