@@ -15,8 +15,16 @@
 set -e  # Exit on error
 
 # -y / --yes: non-interactive (skip confirmations, rebuild runtime if exists)
+# freeze: also build frozen executables after creating runtime
+# --skip-env: skip environment rebuild, only freeze (for Python file changes only)
 NONINTERACTIVE=
-[[ "$1" = "-y" || "$1" = "--yes" ]] && NONINTERACTIVE=1
+DO_FREEZE=
+SKIP_ENV=
+for arg in "$@"; do
+    [[ "$arg" = "-y" || "$arg" = "--yes" ]] && NONINTERACTIVE=1
+    [[ "$arg" = "freeze" ]] && DO_FREEZE=1
+    [[ "$arg" = "--skip-env" ]] && SKIP_ENV=1
+done
 
 echo "============================================================================="
 echo "Doctor Sample Unit (DSU) - Shared Runtime Builder"
@@ -72,25 +80,48 @@ fi
 
 # Check if runtime already exists
 if [ -d "$RUNTIME_DIR" ]; then
-    echo ""
-    echo "WARNING: runtime directory already exists!"
-    echo "Location: $RUNTIME_DIR"
-    echo ""
-    if [ -n "$NONINTERACTIVE" ]; then
-        echo "(-y): Deleting and rebuilding."
-        rm -rf "$RUNTIME_DIR"
-    else
-        read -p "Delete and rebuild? (y/N): " CONFIRM
-        if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
-            echo "Aborted."
-            exit 1
+    if [ -n "$SKIP_ENV" ]; then
+        echo ""
+        echo "(--skip-env): Skipping environment rebuild, using existing runtime."
+        echo "Location: $RUNTIME_DIR"
+        echo ""
+        if [ -n "$DO_FREEZE" ]; then
+            echo "Skipping to freeze step..."
+            SKIP_TO_FREEZE=1
+        else
+            echo "Runtime exists. Use 'freeze' to build executables, or remove --skip-env to rebuild."
+            exit 0
         fi
-        echo "Removing previous runtime..."
-        rm -rf "$RUNTIME_DIR"
+    else
+        echo ""
+        echo "WARNING: runtime directory already exists!"
+        echo "Location: $RUNTIME_DIR"
+        echo ""
+        if [ -n "$NONINTERACTIVE" ]; then
+            echo "(-y): Deleting and rebuilding."
+            rm -rf "$RUNTIME_DIR"
+        else
+            read -p "Delete and rebuild? (y/N): " CONFIRM
+            if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
+                echo "Aborted."
+                exit 1
+            fi
+            echo "Removing previous runtime..."
+            rm -rf "$RUNTIME_DIR"
+        fi
     fi
 fi
 
-# Create virtual environment
+# Skip environment creation if --skip-env
+if [ -n "$SKIP_ENV" ] && [ -d "$RUNTIME_DIR" ]; then
+    echo ""
+    echo "(--skip-env): Skipping environment creation, using existing runtime."
+    echo "Proceeding directly to freeze step (if requested)..."
+    SKIP_TO_FREEZE=1
+fi
+
+# Create virtual environment (unless skipping to freeze)
+if [ -z "$SKIP_TO_FREEZE" ]; then
 echo ""
 echo "[1/5] Creating Python virtual environment..."
 $PYTHON_CMD -m venv "$RUNTIME_DIR"
@@ -196,11 +227,38 @@ echo ""
 echo "Runtime location: $RUNTIME_DIR"
 echo "Platform: Apple Silicon (MPS) - RUNTIME_PLATFORM.txt=mps"
 echo "Python executable: $RUNTIME_DIR/bin/python"
-echo ""
-echo "Usage (run workers directly on Mac):"
-echo "  $RUNTIME_DIR/bin/python workers/bsroformer_worker.py --worker"
-echo "  $RUNTIME_DIR/bin/python workers/demucs_worker.py --worker"
-echo "  $RUNTIME_DIR/bin/python workers/audio_separator_worker.py --worker"
-echo ""
-echo "Workers will auto-detect MPS and use GPU acceleration!"
+fi
+
+# Optional: Freeze executables
+if [[ -n "$DO_FREEZE" ]] || [[ -n "$SKIP_TO_FREEZE" ]]; then
+    echo ""
+    echo "============================================================================="
+    echo "Freezing executables (build_dsu.py)..."
+    echo "============================================================================="
+    echo ""
+    source "$RUNTIME_DIR/bin/activate"
+    BUILD_DSU_SCRIPT="$(dirname "$SCRIPT_DIR")/py/build_dsu.py"
+    if [ ! -f "$BUILD_DSU_SCRIPT" ]; then
+        BUILD_DSU_SCRIPT="$PROJECT_ROOT/scripts/building/py/build_dsu.py"
+    fi
+    "$RUNTIME_DIR/bin/python" "$BUILD_DSU_SCRIPT"
+    deactivate 2>/dev/null || true
+    echo ""
+    BUILD_PY_DIR="$(dirname "$SCRIPT_DIR")/py"
+    echo "============================================================================="
+    echo "Freeze complete! Executables in: $BUILD_PY_DIR/dist/dsu/"
+    echo "============================================================================="
+    echo ""
+    echo "Test: $BUILD_PY_DIR/dist/dsu/dsu-bsroformer --worker"
+    echo ""
+else
+    echo "Usage (run workers directly on Mac):"
+    echo "  $RUNTIME_DIR/bin/python workers/bsroformer_worker.py --worker"
+    echo "  $RUNTIME_DIR/bin/python workers/demucs_worker.py --worker"
+    echo "  $RUNTIME_DIR/bin/python workers/audio_separator_worker.py --worker"
+    echo ""
+    echo "To freeze: ./build_runtime_mac_mps.sh -y freeze"
+    echo ""
+fi
+
 echo "============================================================================="

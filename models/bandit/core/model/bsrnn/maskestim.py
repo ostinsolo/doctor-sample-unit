@@ -251,7 +251,7 @@ class OverlappingMaskEstimationModule(MaskEstimationModuleBase):
 
         if freq_weights is not None:
             for i, fw in enumerate(freq_weights):
-                self.register_buffer(f"freq_weights/{i}", fw)
+                self.register_buffer(f"freq_weights/{i}", fw.float())
 
                 self.use_freq_weights = use_freq_weights
         else:

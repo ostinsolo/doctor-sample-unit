@@ -73,7 +73,7 @@ if getattr(sys, 'frozen', False):
     _original_findsource = inspect.findsource
     
     # Stub that parses as exactly one top-level function (Triton/inductor require this)
-    _FALLBACK_SRC = 'def __frozen_noop__(*a, **kw): pass\n'
+    _FALLBACK_SRC = 'def __frozen_noop__(x): pass\n'
 
     def _safe_getsourcelines(obj):
         try:

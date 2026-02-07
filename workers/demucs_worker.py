@@ -285,7 +285,7 @@ def _patch_cli_save_audio_to_soundfile():
     _ds.save_audio = _save
 
 
-_FALLBACK_SRC = 'def __frozen_noop__(*a, **kw): pass\n'
+_FALLBACK_SRC = 'def __frozen_noop__(x): pass\n'
 
 def _patched_getsourcelines(obj):
     try:

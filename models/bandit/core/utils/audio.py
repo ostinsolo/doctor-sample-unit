@@ -400,11 +400,11 @@ class LinearFader(BaseFader):
 
         if not self.fade_edge_frames:
             self.first_window = nn.Parameter(
-                    torch.concat([inout_ones, center_ones, out_fade]),
+                    torch.concat([inout_ones, center_ones, out_fade]).float(),
                     requires_grad=False
             )
             self.last_window = nn.Parameter(
-                    torch.concat([in_fade, center_ones, inout_ones]),
+                    torch.concat([in_fade, center_ones, inout_ones]).float(),
                     requires_grad=False
             )
 

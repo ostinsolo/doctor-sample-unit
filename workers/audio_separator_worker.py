@@ -120,7 +120,7 @@ if getattr(sys, 'frozen', False):
     _original_getsource = inspect.getsource
     _original_findsource = inspect.findsource
     
-    _FALLBACK_SRC = 'def __frozen_noop__(*a, **kw): pass\n'
+    _FALLBACK_SRC = 'def __frozen_noop__(x): pass\n'
 
     def _safe_getsourcelines(obj):
         try:
