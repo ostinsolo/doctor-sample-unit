@@ -110,7 +110,7 @@ AUDIO_PACKAGES = [
     "numpy",
     "numpy.testing",
     "numpy.testing._private",
-    "numpy._core.tests",  # Required by scipy->numpy.testing in frozen builds
+    # numpy._core.tests: only in numpy 2.x; Intel Mac uses numpy 1.26 - add conditionally
     # onnx and onnxruntime are optional (not installed to improve performance)
     # They will be added to OPTIONAL_PACKAGES below if available
     "einops",
@@ -145,6 +145,7 @@ AUDIO_PACKAGES = [
 # NOTE: Don't exclude these - torch, requests, etc. need them
 # =============================================================================
 STDLIB_PACKAGES = [
+    "encodings",  # CRITICAL: Registers codec search functions; init_fs_encoding fails without it (Intel Mac)
     "codecs",  # Required for filesystem encoding
     "zlib",  # CRITICAL: Required for zipimport (library.zip decompression)
     "urllib",
@@ -213,6 +214,13 @@ for pkg in OPTIONAL_PACKAGES:
         print(f"  Including optional package ({kind}): {pkg}")
     except (ImportError, RuntimeError, OSError) as e:
         print(f"  Skipping optional package (not available): {pkg} - {type(e).__name__}")
+
+# numpy._core.tests: exists in numpy 2.x only (scipy compat); Intel Mac uses numpy 1.26
+try:
+    __import__("numpy._core.tests")
+    ALL_PACKAGES.append("numpy._core.tests")
+except ImportError:
+    pass
 
 # =============================================================================
 # Modules to exclude (reduce size, not needed at runtime)
